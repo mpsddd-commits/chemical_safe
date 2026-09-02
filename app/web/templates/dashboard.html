@@ -1,0 +1,52 @@
+{% extends "base.html" %}
+{% from "partials/macros.html" import status_badge %}
+{% block title %}대시보드 · safeenv{% endblock %}
+
+{% block content %}
+<h1>대시보드</h1>
+
+<section class="panel" data-testid="health-panel">
+  <h2>시스템 상태</h2>
+  <!-- Filled by app.js. Without JS the raw link below still gives the answer. -->
+  <div id="health-items" class="health-grid" data-testid="health-grid">
+    <span class="muted">확인 중…</span>
+  </div>
+  <p class="muted"><a href="/healthz" data-testid="health-raw-link">원본 응답 보기 (/healthz)</a></p>
+</section>
+
+<section class="panel" data-testid="stats-panel">
+  <h2>색인 현황</h2>
+  <dl class="stats">
+    <div><dt>문서</dt><dd data-testid="stat-documents">{{ stats.documents }}</dd></div>
+    <div><dt>청크</dt><dd data-testid="stat-chunks">{{ stats.chunks }}</dd></div>
+    <div><dt>물질</dt><dd data-testid="stat-substances">{{ stats.substances }}</dd></div>
+  </dl>
+  <p class="muted">
+    임베딩 모델: <code data-testid="stat-embedding-model">{{ stats.embedding_model }}</code>
+    {% if stats.needs_reindex %}
+      <span class="badge badge-partial" data-testid="stat-needs-reindex">재색인 필요</span>
+    {% endif %}
+  </p>
+</section>
+
+<section class="panel" data-testid="recent-jobs-panel">
+  <h2>최근 작업</h2>
+  {% if recent_jobs %}
+  <table data-testid="recent-jobs-table">
+    <thead><tr><th>ID</th><th>종류</th><th>상태</th><th>진행률</th></tr></thead>
+    <tbody>
+      {% for job in recent_jobs %}
+      <tr>
+        <td><a href="/admin/jobs/{{ job.id }}">#{{ job.id }}</a></td>
+        <td>{{ job.kind }}</td>
+        <td>{{ status_badge(job.status) }}</td>
+        <td>{{ (job.ratio * 100) | round(0, 'floor') | int }}%</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="muted" data-testid="recent-jobs-empty">아직 실행된 작업이 없습니다.</p>
+  {% endif %}
+</section>
+{% endblock %}

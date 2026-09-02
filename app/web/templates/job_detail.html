@@ -1,0 +1,110 @@
+{% extends "base.html" %}
+{% from "partials/macros.html" import status_badge, progress_bar %}
+{% block title %}작업 #{{ progress.job_id }} · safeenv{% endblock %}
+
+{% block content %}
+<h1>작업 #{{ progress.job_id }}</h1>
+
+<section class="panel" data-testid="job-summary-card">
+  <div class="summary-row">
+    <div>
+      <span class="label">상태</span>
+      {{ status_badge(progress.status.value) }}
+    </div>
+    <div>
+      <span class="label">종류</span>
+      <code>{{ job.kind if job else '-' }}</code>
+    </div>
+    <div>
+      <span class="label">파라미터</span>
+      <code data-testid="job-params">{{ job.params if job else '{}' }}</code>
+    </div>
+  </div>
+
+  <div class="summary-progress">
+    {% set done = progress.success_count + progress.skipped_count + progress.failure_count %}
+    {{ progress_bar(progress.ratio, progress.total_count, done, progress.status.value) }}
+  </div>
+
+  <dl class="stats">
+    <div><dt>전체</dt><dd data-testid="job-total">{{ progress.total_count }}</dd></div>
+    <div><dt>성공</dt><dd data-testid="job-success">{{ progress.success_count }}</dd></div>
+    <div><dt>건너뜀</dt><dd data-testid="job-skipped">{{ progress.skipped_count }}</dd></div>
+    <div><dt>실패</dt><dd data-testid="job-failure">{{ progress.failure_count }}</dd></div>
+  </dl>
+
+  {% if is_running %}
+  <label class="auto-refresh" data-testid="auto-refresh-toggle">
+    <input type="checkbox" id="auto-refresh" checked>
+    자동 새로고침 (5초)
+  </label>
+  <span class="muted small">
+    JavaScript 없이도 브라우저 새로고침으로 같은 정보를 볼 수 있습니다.
+  </span>
+  {% endif %}
+</section>
+
+{# The point of this screen: when a run comes back "partial", say exactly what
+   failed and why (FR-8). #}
+<nav class="tabs" data-testid="item-filter-tabs">
+  <a href="/admin/jobs/{{ progress.job_id }}"
+     class="{{ 'current' if not selected_status }}"
+     data-testid="item-filter-all">전체</a>
+  {% for s in item_statuses %}
+    <a href="/admin/jobs/{{ progress.job_id }}?status={{ s }}"
+       class="{{ 'current' if selected_status == s }}"
+       data-testid="item-filter-{{ s }}">{{ status_badge(s) }}</a>
+  {% endfor %}
+</nav>
+
+<table data-testid="job-item-table">
+  <thead>
+    <tr>
+      <th>대상</th><th>상태</th><th>단계</th><th>실패 분류</th>
+      <th>사유</th><th>시도</th><th>문서</th>
+    </tr>
+  </thead>
+  <tbody>
+  {% for item in items %}
+    <tr data-testid="job-item-row">
+      <td class="ref-key" title="{{ item.ref_key }}">{{ item.ref_key | truncate(48) }}</td>
+      <td>{{ status_badge(item.status) }}</td>
+      <td class="muted small">{{ item.last_stage or '-' }}</td>
+      <td>
+        {% if item.failure_kind %}
+          {{ status_badge(item.failure_kind) }}
+        {% else %}
+          <span class="muted">-</span>
+        {% endif %}
+      </td>
+      <td class="reason">
+        {% if item.status == 'skipped' %}
+          <span class="muted">변경 없음</span>
+        {% elif item.failure_kind == 'policy_blocked' %}
+          <span data-testid="job-item-policy-blocked">
+            정책상 수집 불가 — 재시도하지 않음
+          </span>
+          <div class="muted small">{{ item.failure_reason | truncate(120) }}</div>
+        {% elif item.failure_reason %}
+          {{ item.failure_reason | truncate(160) }}
+        {% else %}
+          <span class="muted">-</span>
+        {% endif %}
+      </td>
+      <td>{{ item.attempt_count }}</td>
+      <td>
+        {% if item.document_id %}
+          <code>#{{ item.document_id }}</code>
+        {% else %}
+          <span class="muted">-</span>
+        {% endif %}
+      </td>
+    </tr>
+  {% else %}
+    <tr><td colspan="7" class="muted" data-testid="job-item-table-empty">
+      해당 상태의 항목이 없습니다.
+    </td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% endblock %}

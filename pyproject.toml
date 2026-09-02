@@ -1,0 +1,85 @@
+[project]
+name = "safeenv"
+version = "0.1.0"
+description = "Chemical safety and regulation evidence-grounded QA system"
+requires-python = ">=3.12"
+
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    "jinja2>=3.1",
+    "python-multipart>=0.0.12",
+    "pydantic>=2.9",
+    "pydantic-settings>=2.6",
+    "sqlalchemy>=2.0.36",
+    "alembic>=1.14",
+    "psycopg[binary]>=3.2",
+    "pgvector>=0.3.6",
+    "arq>=0.26",
+    "redis>=5.2",
+    "httpx>=0.28",
+    "pypdf>=5.1",
+    "pyyaml>=6.0",
+    # u2. Both are imported lazily inside their adapters, so unit tests never
+    # need either and a missing key never blocks startup (BR-02).
+    "anthropic>=0.40",
+    "google-genai>=1.0",
+    # u5. Authentication. argon2 rather than bcrypt (NFR-11 allows either):
+    # memory-hard, and without bcrypt's silent 72-byte truncation.
+    "argon2-cffi>=23.1",
+    "pyjwt>=2.10",
+]
+
+[project.optional-dependencies]
+# Heavy ML deps. Imported lazily so unit tests never require them (NFR-28).
+ml = [
+    "sentence-transformers>=3.3",
+    "torch>=2.5",
+]
+dev = [
+    "pytest>=8.3",
+    "pytest-asyncio>=0.24",
+    "hypothesis>=6.119",
+    "ruff>=0.8",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+filterwarnings = ["ignore::DeprecationWarning"]
+# Integration tests need a live PostgreSQL and are excluded from the default
+# run, which must stay network- and DB-free (NFR-28). Run them from the host -
+# the app image installs no dev extras, so it has no pytest:
+#
+#   set -a; . ./.env; set +a
+#   POSTGRES_HOST=127.0.0.1 POSTGRES_PORT=5433 REDIS_HOST=127.0.0.1 #     python -m pytest tests/integration -m integration
+#
+# Exporting `.env` is not optional. `tests/conftest.py` sets POSTGRES_PASSWORD
+# and EMBEDDING_DIM defaults so the unit run needs no environment at all, and
+# `os.environ` wins over `.env` in pydantic-settings - without the export the
+# integration run authenticates with "test-password" and every test errors.
+# Port 5433 comes from `docker-compose.override.yml` (the DB is not published
+# by the main compose file, ID-12).
+addopts = "-m 'not integration'"
+markers = [
+    "integration: requires a live database (excluded by default)",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.ruff.lint.per-file-ignores]
+# B008 flags function calls in argument defaults. Depends()/Query() in defaults
+# is FastAPI's documented dependency-injection idiom, not the mutable-default
+# bug the rule targets.
+"app/web/routers/*.py" = ["B008"]
+# u5 puts the shared dependencies here, and they compose with Depends() too.
+"app/web/deps.py" = ["B008"]
+
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"

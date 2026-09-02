@@ -1,0 +1,231 @@
+# safeenv - local stack (ID-1, ID-3, ID-7, ID-10, ID-12).
+#
+# Naming is prefixed throughout (project, network, volumes, images, containers)
+# so this stack can run beside the other projects in this workspace without
+# collisions (ID-16).
+#
+# Host port: 8300. The design said 8200, but Build & Test found `trip-app`
+# already publishing 127.0.0.1:8200 - the ID-16 survey had only checked news
+# (8100) and petmate (8000/5173). CON-2 was corrected accordingly.
+
+name: safeenv
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: safeenv-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-safeenv}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}
+      POSTGRES_DB: ${POSTGRES_DB:-safeenv}
+      TZ: ${TZ:-Asia/Seoul}
+    # No ports mapping on purpose (ID-12): the database is reachable only from
+    # inside safeenv_net. For a DB client, add a docker-compose.override.yml.
+    volumes:
+      - safeenv_pgdata:/var/lib/postgresql/data
+      - ./db/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-safeenv} -d ${POSTGRES_DB:-safeenv}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    deploy:
+      resources:
+        limits:
+          memory: 2g
+    networks: [safeenv_net]
+
+  redis:
+    image: redis:7-alpine
+    container_name: safeenv-redis
+    restart: unless-stopped
+    # Persistence off by design: job state lives in PostgreSQL (DD-13), so a
+    # lost queue costs a re-run, not data.
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          memory: 512m
+    networks: [safeenv_net]
+
+  # One-shot. app and worker both need the schema; running migrations from both
+  # would race, so neither of them does (ID-10).
+  migrate:
+    image: safeenv-app:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: safeenv-migrate
+    restart: "no"
+    env_file: [.env]
+    environment:
+      POSTGRES_HOST: postgres
+      REDIS_HOST: redis
+    command: ["alembic", "-c", "migrations/alembic.ini", "upgrade", "head"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks: [safeenv_net]
+
+  app:
+    image: safeenv-app:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: safeenv-app
+    restart: unless-stopped
+    env_file: [.env]
+    environment:
+      POSTGRES_HOST: postgres
+      REDIS_HOST: redis
+      APP_HOST: 0.0.0.0
+      APP_PORT: 8000
+      ORIGINALS_DIR: /data/originals
+      UPLOADS_DIR: /data/uploads
+      MODEL_CACHE_DIR: /models
+      LOG_DIR: /logs
+    ports:
+      # ---------------------------------------------------------------------
+      # NFR-18 / ID-12 - DO NOT REMOVE THE 127.0.0.1 PREFIX.
+      # The container binds 0.0.0.0 because the compose network must reach it.
+      # This prefix is the ONLY thing keeping the (currently unauthenticated,
+      # ID-13) admin UI off the local network.
+      # ---------------------------------------------------------------------
+      - "127.0.0.1:8300:8000"
+    volumes:
+      - ./data/originals:/data/originals:ro
+      # u5 - user uploads. A named volume rather than a bind mount: these are
+      # user files, not repository content, and they have different backup and
+      # deletion policies from the collected originals (BR-141).
+      - safeenv_uploads:/data/uploads
+      - ./logs:/logs
+      # u2: the query path embeds the question in-process (PP-3), so `app` needs
+      # the model cache too. u1 left this unmounted because only the worker
+      # embedded anything; it downloaded 4.3GB again on every `app` restart.
+      - safeenv_models:/models
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          memory: 2g
+    networks: [safeenv_net]
+
+  # Reranking runs here rather than in `app` (BR-70, FQ2-4, PP-2). With the
+  # embedding model resident, `app` measured 1.70GiB of its 2GiB limit - adding a
+  # cross-encoder would have exceeded it (risk R-4 made concrete by u1 numbers).
+  #
+  # Nothing depends_on this service, deliberately. BR-71 says a reranker failure
+  # falls back to fusion order rather than failing the search, and a startup
+  # dependency would contradict that: the stack must come up without it.
+  reranker:
+    image: safeenv-app:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: safeenv-reranker
+    restart: unless-stopped
+    env_file: [.env]
+    environment:
+      POSTGRES_HOST: postgres
+      REDIS_HOST: redis
+      MODEL_CACHE_DIR: /models
+      LOG_DIR: /logs
+    # No `ports:` - internal only (NFR-18). Reachable at http://reranker:8100
+    # from inside safeenv_net and from nowhere else.
+    command:
+      ["uvicorn", "app.rerank_service:app", "--host", "0.0.0.0", "--port", "8100"]
+    healthcheck:
+      test:
+        - "CMD"
+        - "python"
+        - "-c"
+        - "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8100/healthz', timeout=4).status==200 else 1)"
+      interval: 30s
+      timeout: 10s
+      start_period: 120s
+      retries: 3
+    volumes:
+      - ./logs:/logs
+      - safeenv_models:/models
+    deploy:
+      resources:
+        limits:
+          # Cross-encoder weights plus encoding peak. Smaller than the worker's
+          # 4g because this process holds no embedding model.
+          memory: 2g
+    profiles: ["reranker"]
+    networks: [safeenv_net]
+
+  worker:
+    image: safeenv-app:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
+    # No container_name: `--scale worker=N` needs generated names (ID-11).
+    restart: unless-stopped
+    env_file: [.env]
+    environment:
+      POSTGRES_HOST: postgres
+      REDIS_HOST: redis
+      ORIGINALS_DIR: /data/originals
+      UPLOADS_DIR: /data/uploads
+      MODEL_CACHE_DIR: /models
+      LOG_DIR: /logs
+    command: ["arq", "app.worker.WorkerSettings"]
+    # The image's HEALTHCHECK probes http://127.0.0.1:8000/healthz, which only
+    # the web process serves - the worker runs arq and could never pass it, so
+    # it reported `unhealthy` no matter how well it was working. Liveness here
+    # means "the arq loop is still ticking", which is what the BR-52 heartbeat
+    # records; `worker_stale_threshold` allows two missed beats.
+    healthcheck:
+      test: ["CMD", "python", "-m", "app.worker_probe"]
+      interval: 30s
+      timeout: 10s
+      start_period: 90s
+      retries: 3
+    volumes:
+      - ./data/originals:/data/originals
+      # Read-only: indexing never modifies an upload. Write access would let a
+      # worker bug damage user files, and deletion is the app's job (BR-144).
+      - safeenv_uploads:/data/uploads:ro
+      - ./logs:/logs
+      - safeenv_models:/models
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          # Holds the embedding model resident; 2g is not enough (risk R-3).
+          memory: 4g
+    networks: [safeenv_net]
+
+volumes:
+  safeenv_pgdata:
+    name: safeenv_pgdata
+  safeenv_uploads:
+    name: safeenv_uploads
+  safeenv_models:
+    name: safeenv_models
+
+networks:
+  safeenv_net:
+    name: safeenv_net
+    driver: bridge

@@ -1,0 +1,39 @@
+{% extends "base.html" %}
+{% block title %}질의 이력 · safeenv{% endblock %}
+
+{#
+  P10 질의 이력 (FR-32, FR-47).
+
+  저장된 문장·인용·스냅샷으로 재열람한다(BR-149). 재실행 버튼은 두지 않는다
+  (BR-150) — 무료 티어 할당량을 사용자 손에 쥐여주는 일이다.
+
+  거부된 질의도 남는다. "답하지 않았다"는 것도 사용자가 알아야 할 이력이다.
+#}
+{% block content %}
+<section class="card" data-testid="history-panel">
+  <h1>질의 이력</h1>
+
+  {% if entries %}
+  <ul class="history-list" data-testid="history-list">
+    {% for entry in entries %}
+    <li data-testid="history-entry">
+      <div class="history-when">{{ entry.asked_at.strftime('%m-%d %H:%M') }}</div>
+      <div class="history-question">{{ entry.question }}</div>
+      <div class="history-outcome">
+        {% if entry.outcome.startswith('refused') %}
+          근거가 부족해 답변하지 않음
+        {% else %}
+          {{ entry.sentence_count }}문장 · 근거 {{ entry.citation_count }}건
+        {% endif %}
+        <a href="/query/{{ entry.query_id }}" data-testid="history-open">열기</a>
+      </div>
+    </li>
+    {% endfor %}
+  </ul>
+  {% else %}
+  <p class="muted" data-testid="history-empty">
+    이력이 없습니다. 로그인한 상태에서 한 질의만 여기에 남습니다.
+  </p>
+  {% endif %}
+</section>
+{% endblock %}

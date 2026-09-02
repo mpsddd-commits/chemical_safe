@@ -1,0 +1,83 @@
+{% extends "base.html" %}
+{% block title %}safeenv — {{ card.substance.display_name }}{% endblock %}
+
+{#
+  P7-1 (FR-24, FR-25). Three display rules are requirements:
+
+  * **Seven items, always, in order** (BR-102). Measured, most of the 40
+    substances have no MSDS and six of seven come back empty. Dropping the empty
+    ones makes the card look finished, and the reader cannot tell "this
+    substance has no protective-equipment data" from "this screen does not show
+    protective equipment".
+  * **The gap count is stated** (BR-106), the way u2 states removed sentences
+    (BR-88) and unpriced calls (BR-96).
+  * **Every source is listed** (BR-103). When two MSDS disagree, the
+    disagreement is the information.
+#}
+
+{% block content %}
+<section class="substance-card" data-testid="substance-card">
+  <header class="card-header" data-testid="card-header">
+    <h1>{{ card.substance.name_ko or card.substance.name_en or "(이름 없음)" }}</h1>
+    {% if card.substance.name_en and card.substance.name_ko %}
+      <p class="name-en">{{ card.substance.name_en }}</p>
+    {% endif %}
+    <p class="identifiers">
+      {% if card.substance.cas_number %}CAS {{ card.substance.cas_number }}{% endif %}
+    </p>
+  </header>
+
+  <!-- FR-35 — always present, never collapsed. -->
+  <p class="disclaimer" data-testid="disclaimer">
+    ⚠️ 이 정보는 참고용입니다. 실제 취급 시 반드시 해당 물질의 MSDS 원문과
+    관련 법령을 확인하십시오.
+  </p>
+
+  {#- BR-106: only when something is actually missing. -#}
+  {% if card.missing_count %}
+  <p class="notice-missing" data-testid="missing-notice">
+    ℹ️ {% if not card.has_msds %}이 물질은 MSDS 문서가 없어 {% endif %}
+    7개 항목 중 <strong>{{ card.missing_count }}개</strong>가 비어 있습니다.
+  </p>
+  {% endif %}
+
+  <ol class="card-items" data-testid="card-items">
+    {% for item in card.items %}
+    <li class="card-item{% if item.is_empty %} empty{% endif %}"
+        data-testid="card-item" data-key="{{ item.key.value }}">
+      <h2>{{ item.label }}</h2>
+
+      {% if item.is_empty %}
+        {#- BR-106 / u2 BR-90: written out. A blank reads as a load failure. -#}
+        <p class="no-data" data-testid="no-data">{{ no_data }}</p>
+      {% else %}
+        <ul class="item-values">
+          {% for v in item.values %}
+          <li data-testid="item-value">
+            {% if v.route %}
+              <span class="route-badge" data-testid="route-badge">
+                {%- if v.route.value == "inhale" %}흡입
+                {%- elif v.route.value == "skin" %}피부
+                {%- elif v.route.value == "eye" %}눈
+                {%- else %}경구{% endif -%}
+              </span>
+            {% endif %}
+            {#- BR-104: the source text, unedited, line breaks preserved. -#}
+            <blockquote class="value-text">{{ v.text }}</blockquote>
+            <div class="value-source" data-testid="value-source">
+              📄 {{ v.document_title or "(제목 없음)" }}
+              {#- u2 BR-90: say "no section" rather than leaving a blank. -#}
+              · {{ v.section_title or v.section_code or "섹션 정보 없음" }}
+              <a href="{{ v.source_url }}" target="_blank" rel="noopener noreferrer">🔗 원문</a>
+            </div>
+          </li>
+          {% endfor %}
+        </ul>
+      {% endif %}
+    </li>
+    {% endfor %}
+  </ol>
+
+  <p class="back-link"><a href="/substances">← 물질 검색으로</a></p>
+</section>
+{% endblock %}

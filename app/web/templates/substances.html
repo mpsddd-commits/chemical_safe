@@ -1,0 +1,62 @@
+{% extends "base.html" %}
+{% block title %}safeenv — 물질 안전 카드{% endblock %}
+
+{#
+  P7 (FR-23, FR-26). Two rules here are requirements, not styling:
+
+  * The unsupported key types are shown **always**, not only on a miss (BR-109,
+    BR-110). Silently returning nothing for a UN number leaves the user thinking
+    they mistyped.
+  * When several substances match, the list is shown and **nothing is chosen**
+    (BR-101). 황산 and 황산구리 are different chemicals and a reader looking at
+    the wrong card has no way to notice — that is R-6.
+#}
+
+{% block content %}
+<section class="substance-search" data-testid="substance-search-page">
+  <h1>물질 안전 카드</h1>
+
+  <form method="get" action="/substances" class="query-form" data-testid="substance-form">
+    <label for="q" class="sr-only">물질명 또는 CAS 번호</label>
+    <input type="text" id="q" name="q" data-testid="substance-input"
+           value="{{ query or '' }}" maxlength="200" autocomplete="off"
+           placeholder="예: 황산  또는  7664-93-9" required>
+    <button type="submit" data-testid="substance-submit">검색</button>
+  </form>
+
+  <p class="notice-keys" data-testid="supported-keys">
+    ℹ️ 검색 가능: 국문명 · 영문명 · CAS 번호
+    {%- if unsupported_keys %}
+    <br>UN 번호와 이명(異名)은 <strong>현재 데이터가 없습니다.</strong>
+    {%- endif %}
+  </p>
+
+  {% if searched %}
+    {% if matches %}
+    <section class="substance-results" data-testid="substance-results">
+      <h2>검색 결과 {{ matches|length }}건{% if matches|length > 1 %} — 물질을 선택하십시오{% endif %}</h2>
+      <ul data-testid="substance-list">
+        {% for m in matches %}
+        <li data-testid="substance-candidate">
+          <a href="/substances/{{ m.substance_id }}">{{ m.display_name }}</a>
+          {% if m.name_en and m.name_en != m.display_name %}
+            <span class="muted">({{ m.name_en }})</span>
+          {% endif %}
+          {% if m.cas_number %}<span class="cas">CAS {{ m.cas_number }}</span>{% endif %}
+          {#- BR-101: why this is a candidate. -#}
+          <span class="match-badge" data-testid="match-badge">
+            [{{ match_label.get(m.matched_on.value, m.matched_on.value) }}]
+          </span>
+        </li>
+        {% endfor %}
+      </ul>
+    </section>
+    {% else %}
+    <section class="substance-empty" data-testid="substance-empty">
+      {#- The query is echoed back so a typo is visible to the person who made it. -#}
+      <p>ⓘ "{{ query }}"에 해당하는 물질을 찾지 못했습니다.</p>
+    </section>
+    {% endif %}
+  {% endif %}
+</section>
+{% endblock %}

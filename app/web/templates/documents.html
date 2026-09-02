@@ -1,0 +1,83 @@
+{% extends "base.html" %}
+{% block title %}내 문서 · safeenv{% endblock %}
+
+{#
+  P9 문서 관리 (FR-27, FR-29, FR-46).
+
+  여기 나오는 것은 **내가 올린 문서뿐**이다. 공개 코퍼스 78문서는 나오지 않는다 —
+  이 화면은 "검색 대상 전체"가 아니라 "내가 올린 것"이고, 섞으면 사용자가 공개
+  문서를 지울 수 있다고 오해한다.
+
+  거부 사유는 그대로 보여준다. "업로드 실패"만으로는 파일을 고칠 수 없다.
+#}
+{% block content %}
+<section class="card" data-testid="documents-panel">
+  <h1>내 문서</h1>
+
+  {% if error %}
+  <p class="error" data-testid="upload-error">⛔ {{ error }}</p>
+  {% endif %}
+
+  <form method="post" action="/documents" enctype="multipart/form-data"
+        class="upload-form" data-testid="upload-form">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <input type="file" name="file" accept="application/pdf" required
+           data-testid="upload-file">
+    <button type="submit" data-testid="upload-submit">업로드</button>
+    <p class="hint">PDF · 20MB 이하 · 200페이지 이하</p>
+  </form>
+
+  {% if documents %}
+  <table class="table" data-testid="documents-table">
+    <thead>
+      <tr><th>파일명</th><th>크기</th><th>페이지</th><th>상태</th><th></th></tr>
+    </thead>
+    <tbody>
+      {% for doc in documents %}
+      <tr data-testid="document-row">
+        <td>{{ doc.filename }}</td>
+        <td>{{ '%.1f'|format(doc.size_bytes / 1048576) }}MB</td>
+        <td>{{ doc.page_count if doc.page_count is not none else '—' }}</td>
+        <td data-testid="document-status">
+          {# 색인 실패를 "진행 중"으로 보이게 두지 않는다. 빈 PDF·스캔 PDF 는
+             ExtractionError 로 끝나는데, 잡 기록이 없으면 화면은 영원히
+             "색인 중"이라고 말한다 (FQ7-6). #}
+          {% if doc.index_status == 'failed' %}
+            ⛔ 색인 실패
+            <span class="hint" data-testid="document-error">{{ doc.index_error }}</span>
+          {% elif doc.chunk_count == 0 %}
+            ⏳ 색인 중
+          {% elif doc.structure_status == 'unstructured' %}
+            {# 숨기지 않는다 — u3 에서 MSDS PDF 8건 중 2건이 섹션 0 이었고,
+               카드·인용이 비는 이유가 여기 보여야 한다. #}
+            ⚠️ 구조화 실패 · 청크 {{ doc.chunk_count }}
+          {% else %}
+            ✅ 색인 완료 · 청크 {{ doc.chunk_count }}
+          {% endif %}
+        </td>
+        <td class="row-actions">
+          <a href="/documents/{{ doc.uuid }}/file" data-testid="document-download">원본</a>
+          <form method="post" action="/documents/{{ doc.id }}/reindex" class="inline-form">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <button type="submit" data-testid="document-reindex">재색인</button>
+          </form>
+          <form method="post" action="/documents/{{ doc.id }}/delete" class="inline-form"
+                onsubmit="return confirm('삭제하면 되돌릴 수 없습니다. 계속할까요?');">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <button type="submit" class="danger" data-testid="document-delete">삭제</button>
+          </form>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="muted" data-testid="documents-empty">아직 올린 문서가 없습니다.</p>
+  {% endif %}
+
+  <p class="hint">
+    업로드한 문서는 <strong>본인의 질의에서만</strong> 검색됩니다. 다른 사용자의
+    결과에는 나타나지 않습니다.
+  </p>
+</section>
+{% endblock %}

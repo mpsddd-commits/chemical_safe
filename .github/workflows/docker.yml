@@ -1,0 +1,28 @@
+# Dockerfile 이 여전히 빌드되는지 확인한다. torch CPU 휠 때문에 5~10분이라
+# main push 에만 건다. 이미지를 어디에도 올리지 않는다 — 배포 대상이 없고
+# (127.0.0.1 바인딩, NFR-18) 없는 배포처를 위한 파이프라인은 만들지 않는다.
+name: Docker build
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - Dockerfile
+      - pyproject.toml
+      - .dockerignore
+      - .github/workflows/docker.yml
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

@@ -1,0 +1,108 @@
+{% extends "base.html" %}
+{% block title %}safeenv — LLM 사용량{% endblock %}
+
+{#
+  P6 (FR-42, NFR-19).
+
+  The rule that shapes this page: a cost total shown on its own reads as "this
+  is everything". When unpriced calls are in the window that is false, so the
+  exclusion badge is rendered from the same object as the total and cannot be
+  omitted by editing this template alone (BR-96).
+#}
+
+{% block content %}
+<section class="usage-page" data-testid="usage-page">
+  <header class="usage-header">
+    <h1>LLM 사용량</h1>
+    <form method="get" action="/usage" class="usage-range" data-testid="usage-range-form">
+      <label for="from">기간</label>
+      <input type="date" id="from" name="from" value="{{ usage['from'].date() }}"
+             data-testid="usage-from">
+      <span>~</span>
+      <input type="date" id="to" name="to" value="{{ usage['to'].date() }}"
+             data-testid="usage-to">
+      <button type="submit" data-testid="usage-apply">조회</button>
+    </form>
+  </header>
+
+  <section class="usage-summary" data-testid="usage-summary">
+    <p data-testid="usage-calls">
+      호출 <strong>{{ usage.calls }}</strong>건
+      · 성공 {{ usage.ok_calls }}
+      · 실패 {{ usage.failed_calls }}
+    </p>
+    <p data-testid="usage-tokens">
+      입력 {{ "{:,}".format(usage.input_tokens) }} 토큰
+      · 출력 {{ "{:,}".format(usage.output_tokens) }} 토큰
+    </p>
+    <p data-testid="usage-cache">
+      캐시 적중 {{ "{:,}".format(usage.cache_read_tokens) }} 토큰
+      {% if usage.cache_hit_ratio is not none %}
+        ({{ "%.1f"|format(usage.cache_hit_ratio * 100) }}%)
+      {% endif %}
+      {#- PP-4: a sustained 0% means BR-94's cached prefix is broken on every
+          request. Nothing errors, so this number is the only signal. -#}
+      {% if usage.cache_hit_ratio is not none and usage.cache_hit_ratio == 0 and usage.calls > 0 %}
+        <span class="warn" data-testid="cache-zero-warning">
+          — 캐시 적중 0%. 프롬프트 접두사가 매 요청 깨지고 있을 수 있습니다 (BR-94).
+        </span>
+      {% endif %}
+    </p>
+    <p data-testid="usage-latency">
+      지연 P50 {{ usage.latency_p50_ms or "—" }} ms
+      · P95 {{ usage.latency_p95_ms or "—" }} ms
+    </p>
+
+    <p class="usage-cost" data-testid="usage-cost">
+      비용 {% if usage.cost_usd is not none %}${{ "%.2f"|format(usage.cost_usd) }}{% else %}—{% endif %}
+    </p>
+    {% if usage.unpriced_calls %}
+      <p class="warn" data-testid="unpriced-badge">
+        ⚠️ 단가 미등록 모델 호출 {{ usage.unpriced_calls }}건은 합계에서 제외됨
+      </p>
+    {% endif %}
+  </section>
+
+  <section class="usage-breakdown">
+    <h2>용도별</h2>
+    {#- BR-86a: verify outnumbers answer by design (one call per sentence).
+        Showing the split is what keeps that cost from hiding. -#}
+    <table data-testid="usage-by-purpose">
+      <thead><tr><th>용도</th><th>호출</th><th>비용</th></tr></thead>
+      <tbody>
+        {% for row in usage.by_purpose %}
+        <tr>
+          <td>{{ row.purpose }}</td>
+          <td>{{ row.calls }}</td>
+          <td>
+            {% if row.cost_usd is not none %}${{ "%.2f"|format(row.cost_usd) }}{% else %}—{% endif %}
+            {% if row.unpriced %}<span class="muted">({{ row.unpriced }}건 미산정)</span>{% endif %}
+          </td>
+        </tr>
+        {% else %}
+        <tr><td colspan="3" class="muted">이 기간에 호출이 없습니다.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+
+    <h2>모델별</h2>
+    <table data-testid="usage-by-model">
+      <thead><tr><th>모델</th><th>호출</th><th>비용</th></tr></thead>
+      <tbody>
+        {% for row in usage.by_model %}
+        <tr>
+          <td>{{ row.model }}</td>
+          <td>{{ row.calls }}</td>
+          <td>
+            {% if row.cost_usd is not none %}${{ "%.2f"|format(row.cost_usd) }}{% else %}—{% endif %}
+            {% if row.unpriced %}<span class="muted">({{ row.unpriced }}건 미산정)</span>{% endif %}
+          </td>
+        </tr>
+        {% else %}
+        <tr><td colspan="3" class="muted">이 기간에 호출이 없습니다.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </section>
+</section>
+{% endblock %}

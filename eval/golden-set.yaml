@@ -1,0 +1,387 @@
+# 골든 QA 셋 — safeenv (FR-36)
+#
+# 초안입니다. **사람의 검토가 이 파일의 값을 결정합니다** (R-5).
+# 30문항 전부 실제 코퍼스의 조문·섹션을 SQL 로 읽어 만들었고, LLM 은 쓰지
+# 않았습니다 — 평가 대상 모델이 정답을 만들면 회귀 감지력이 원리적으로 떨어집니다.
+#
+# ── 문서를 가리키는 방법 ───────────────────────────────────────────────
+# `document_id` 는 쓰지 않습니다. 재색인·재수집으로 바뀔 수 있습니다.
+# `source` + `external_id` 가 안정적인 키입니다 (BR-09 가 이것으로 변경을 판단합니다).
+#
+# `section` 은 BR-26 이 만든 인용 단위입니다. 다만 BR-31a 로 섹션이 접힌 문서는
+# 섹션이 없습니다 — 사고 문서 12건이 그렇습니다. 그 경우 `section` 을 생략하고
+# 문서 단위로 채점합니다.
+#
+# ── 채점 ──────────────────────────────────────────────────────────────
+# expects: answer   → 검색 지표 + 정답률 + 인용 정확도 + 충실도
+# expects: refusal  → 거부 정확도만. **LLM 을 호출하지 않습니다** (BR-73)
+#
+# 법령 참조 문서 대응 (external_id 는 국가법령정보 법령 ID)
+#   000162 화학물질관리법          004390 동 시행령      007845 동 시행규칙
+#   011857 화학물질등록평가법      012183 동 시행령      012201 동 시행규칙
+#   001766 산업안전보건법          003786 동 시행령      007364 동 시행규칙
+
+version: 1
+
+questions:
+
+  # ───────────────────────── 법령 10문항 ─────────────────────────
+
+  - id: law-01
+    category: law
+    question: 유해화학물질을 보관할 때 종류가 다른 물질을 함께 보관해도 되나요?
+    expects: answer
+    answer_points:
+      - 종류가 다른 유해화학물질을 혼합하여 보관·저장하면 안 된다
+      - 화학물질관리법 제13조 유해화학물질 취급기준 제3호
+    evidence:
+      - source: law_api
+        external_id: "000162"
+        section: 제13조
+
+  - id: law-02
+    category: law
+    question: 화학사고가 발생하면 어느 기관에 신고해야 하나요?
+    expects: answer
+    answer_points:
+      - 관할 지방자치단체, 지방환경관서, 국가경찰관서, 소방관서 또는 지방고용노동관서
+      - 즉시 신고하여야 한다
+    evidence:
+      - source: law_api
+        external_id: "000162"
+        section: 제43조
+
+  - id: law-03
+    category: law
+    question: 사고대비물질을 판매 목적으로 진열·보관할 때 계획서 제출 기준량은 얼마인가요?
+    expects: answer
+    answer_points:
+      - 사고대비물질은 100킬로그램
+      - 그 밖의 인체등유해성물질은 500킬로그램
+      - 초과 시 진열·보관계획서를 지방환경관서의 장에게 제출
+    evidence:
+      - source: law_api
+        external_id: "007845"
+        section: 제10조
+
+  - id: law-04
+    category: law
+    question: 화학물질관리법상 유해화학물질 취급 담당자에는 누가 해당하나요?
+    expects: answer
+    answer_points:
+      - 유해화학물질 영업자가 고용하여 직접 취급하는 사람
+      - 화학사고예방관리계획서 작성 담당자
+      - 수급인 및 수급인이 고용하여 직접 취급하는 사람
+    evidence:
+      - source: law_api
+        external_id: "004390"
+        section: 제13조
+
+  - id: law-05
+    category: law
+    question: 신규화학물질은 연간 몇 톤 이상이면 등록해야 하나요?
+    expects: answer
+    answer_points:
+      - 연간 1톤 이상
+      - 제조 또는 수입 전에 등록하여야 한다
+    evidence:
+      - source: law_api
+        external_id: "011857"
+        section: 제10조
+
+  - id: law-06
+    category: law
+    question: 연간 1톤 이상 10톤 미만 기존화학물질의 등록유예기간은 언제까지인가요?
+    expects: answer
+    answer_points:
+      - 2030년 12월 31일
+      - 10톤 이상 100톤 미만은 2027년 12월 31일
+    evidence:
+      - source: law_api
+        external_id: "012183"
+        section: 제10조
+
+  - id: law-07
+    category: law
+    question: 물질안전보건자료는 누가 작성해서 어디에 제출해야 하나요?
+    expects: answer
+    answer_points:
+      - 물질안전보건자료대상물질을 제조하거나 수입하려는 자
+      - 고용노동부장관에게 제출
+    evidence:
+      - source: law_api
+        external_id: "001766"
+        section: 제110조
+
+  - id: law-08
+    category: law
+    question: 사업주는 물질안전보건자료를 작업장에서 어떻게 관리해야 하나요?
+    expects: answer
+    answer_points:
+      - 취급하는 근로자가 쉽게 볼 수 있는 장소에 게시하거나 갖추어 둘 것
+      - 작업공정별로 관리 요령을 게시할 것
+      - 해당 근로자를 교육할 것
+    evidence:
+      - source: law_api
+        external_id: "001766"
+        section: 제114조
+
+  - id: law-09
+    category: law
+    question: 공정안전보고서를 제출해야 하는 업종에는 어떤 것이 있나요?
+    expects: answer
+    answer_points:
+      - 원유 정제처리업, 기타 석유정제물 재처리업
+      - 석유화학계 기초화학물질 제조업, 합성수지 및 기타 플라스틱물질 제조업
+      - 화약 및 불꽃제품 제조업 등
+    evidence:
+      - source: law_api
+        external_id: "003786"
+        section: 제43조
+
+  - id: law-10
+    category: law
+    question: 영업비밀인 화학물질 명칭을 물질안전보건자료에 적지 않으려면 어떻게 해야 하나요?
+    expects: answer
+    answer_points:
+      - 고용노동부장관에게 비공개 승인을 신청해야 한다
+      - 산업안전보건법 제112조 물질안전보건자료의 일부 비공개 승인
+    evidence:
+      - source: law_api
+        external_id: "001766"
+        section: 제112조
+
+  # ─────────────────── 물질·CAS 8문항 (BR-38 완전일치 포함) ───────────────────
+
+  - id: sub-01
+    category: substance
+    question: CAS 7664-93-9 물질은 무엇인가요?
+    expects: answer
+    answer_points:
+      - 황산 (Sulfuric acid)
+    evidence:
+      - source: ncis_substance
+        external_id: "4958"
+        section: substance_identity
+
+  - id: sub-02
+    category: substance
+    question: 황산 증기를 흡입하면 어떤 증상이 나타나나요?
+    expects: answer
+    answer_points:
+      - 심각한 기도 자극, 기침, 호흡곤란
+      - 지연된 폐부종
+      - 호흡기도 화학적 화상
+    evidence:
+      - source: ncis_substance
+        external_id: "4958"
+        section: substance_inhale
+
+  - id: sub-03
+    category: substance
+    question: 황산이 눈에 접촉하면 어떻게 되나요?
+    expects: answer
+    answer_points:
+      - 부식성이며 심각한 조직 화상
+      - 실명을 유발할 수 있음
+      - 흐릿한 시야, 출혈, 통증
+    evidence:
+      - source: ncis_substance
+        external_id: "4958"
+        section: substance_eye
+
+  - id: sub-04
+    category: substance
+    question: CAS 67-56-1 물질을 삼켰을 때 보통 치명적인 양은 얼마인가요?
+    expects: answer
+    answer_points:
+      - 100~125 mL
+      - 메틸알코올(메탄올)
+    evidence:
+      - source: ncis_substance
+        external_id: "4823"
+        section: substance_oral
+
+  - id: sub-05
+    category: substance
+    question: 메탄올을 흡입하면 시각에 어떤 영향이 있나요?
+    expects: answer
+    answer_points:
+      - 독성 영향이 신경계, 특히 안구신경에 일어남
+      - 시야가 흐릿해지고 시각상실에 이를 수 있음
+    evidence:
+      - source: ncis_substance
+        external_id: "4823"
+        section: substance_inhale
+
+  - id: sub-06
+    category: substance
+    question: 암모니아가 눈에 들어가면 어떤 손상이 생기나요?
+    expects: answer
+    answer_points:
+      - 소량으로도 영구적인 손상
+      - 동상을 일으킬 수 있음
+      - 홍반, 통증, 심한 깊은 화상
+    evidence:
+      - source: ncis_substance
+        external_id: "4957"
+        section: substance_eye
+
+  - id: sub-07
+    category: substance
+    question: CAS 7782-50-5 물질을 흡입하면 어떻게 되나요?
+    expects: answer
+    answer_points:
+      - 염소
+      - 질식감, 기도폐쇄, 후두 부종, 저산소증
+      - 높은 농도에서 실신 및 거의 즉각적인 사망
+      - 심한 노출 후 폐부종
+    evidence:
+      - source: ncis_substance
+        external_id: "4994"
+        section: substance_inhale
+
+  - id: sub-08
+    category: substance
+    question: 염소에 노출되면 나타나는 일반적인 증상은 무엇인가요?
+    expects: answer
+    answer_points:
+      - 눈, 코, 입의 화상, 눈물, 기도폐쇄, 흉골하 통증
+      - 폐부종, 폐렴, 저산소증
+      - 액체는 동상
+    evidence:
+      - source: ncis_substance
+        external_id: "4994"
+        section: substance_symptom
+
+  # ───────────────── MSDS 4문항 (황산·톨루엔·메탄올만 가능) ─────────────────
+
+  - id: msds-01
+    category: msds
+    question: 황산을 취급할 때 눈 보호구는 무엇을 착용해야 하나요?
+    expects: answer
+    answer_points:
+      - 비산물이나 유해한 액체로부터 보호되는 보안경
+      - 국소배기 또는 공정밀폐 환기장치
+    evidence:
+      - source: msds_pdf
+        external_id: koreachem-sulfuric-acid
+        section: msds_08
+
+  - id: msds-02
+    category: msds
+    question: 황산은 어떻게 저장해야 하나요?
+    expects: answer
+    answer_points:
+      - 밀폐된 용기, 서늘하고 건조하며 환기가 잘 되는 장소
+      - 혼합금지 물질과 분리
+      - 내식성 콘크리트 바닥
+    evidence:
+      - source: msds_pdf
+        external_id: koreachem-sulfuric-acid
+        section: msds_07
+
+  - id: msds-03
+    category: msds
+    question: 톨루엔의 국내 노출기준 TWA와 STEL은 얼마인가요?
+    expects: answer
+    answer_points:
+      - TWA 50.0 ppm
+      - STEL 150.0 ppm
+      - ACGIH TWA 는 20 ppm
+    evidence:
+      - source: msds_pdf
+        external_id: skchem-toluene
+        section: msds_08
+
+  - id: msds-04
+    category: msds
+    question: 메탄올의 GHS 분류에서 인화성 액체는 몇 구분인가요?
+    expects: answer
+    answer_points:
+      - 인화성 액체 구분 2
+      - 신호어는 위험
+    evidence:
+      - source: msds_pdf
+        external_id: methanex-methanol
+        section: msds_02
+
+  # ───────── 사고 3문항 (BR-31a 로 섹션이 접혀 문서 단위로 채점) ─────────
+
+  - id: inc-01
+    category: incident
+    question: 광운대학교에서 발생한 폭발 사고의 원인은 무엇이었나요?
+    expects: answer
+    answer_points:
+      - 산 폐액용기(황산, 과산화수소 함유)에 아세톤을 폐기하는 과정에서 반응
+      - 안전기준 미준수
+    evidence:
+      - source: incident_data
+        external_id: "2025-155"
+
+  - id: inc-02
+    category: incident
+    question: 곤지암 냉장 물류센터의 암모니아 누출은 어떤 작업 중에 발생했나요?
+    expects: answer
+    answer_points:
+      - 지하 2층 냉동창고 유니트쿨러 설비의 유지·관리 작업(성에 제거) 중
+      - 설비 손상으로 암모니아 일부 누출
+    evidence:
+      - source: incident_data
+        external_id: "2025-152"
+
+  - id: inc-03
+    category: incident
+    question: 전주 반응기 폭발 사고에서 폭발을 일으킨 가스는 무엇이었나요?
+    expects: answer
+    answer_points:
+      - 수소
+      - 용접 불티가 개방된 반응기 안으로 비산되어 수소가스와 반응
+    evidence:
+      - source: incident_data
+        external_id: "2025-151"
+
+  # ───────────────── 거부 5문항 (LLM 을 호출하지 않는다) ─────────────────
+  #
+  # ref-04·ref-05 가 이 셋의 핵심입니다. 코퍼스 밖의 잡담을 거부하는 것은 쉽고,
+  # **도메인 안이지만 근거가 없는 질문**을 거부하는 것이 SC-3 이 요구하는 것입니다.
+
+  - id: ref-01
+    category: refusal
+    question: 오늘 서울 날씨 어때요?
+    expects: refusal
+    rationale: 코퍼스와 무관한 잡담
+    evidence: []
+
+  - id: ref-02
+    category: refusal
+    question: 파이썬으로 리스트를 정렬하는 방법을 알려주세요.
+    expects: refusal
+    rationale: 코퍼스와 무관한 기술 질문
+    evidence: []
+
+  - id: ref-03
+    category: refusal
+    question: 두통이 3일째 계속되는데 무슨 병인가요?
+    expects: refusal
+    rationale: 의료 진단. 코퍼스 밖이며 R-6(안전 도메인에서 근거 없는 답변) 대상
+    evidence: []
+
+  - id: ref-04
+    category: refusal
+    question: 카드뮴의 급성 독성 기준은 얼마인가요?
+    expects: refusal
+    rationale: |
+      도메인 안이지만 카드뮴은 물질 마스터 49건에 없고 MSDS 도 없다.
+      법령 조문이 유사도상 걸릴 수 있어 **가장 잡기 어려운 거부**다.
+    evidence: []
+
+  - id: ref-05
+    category: refusal
+    question: 벤젠에 노출되면 어떤 응급조치를 해야 하나요?
+    expects: refusal
+    rationale: |
+      물질 마스터에 벤젠(71-43-2)이 없다. 유도체
+      "1-클로로-2,4-다이나이트로벤젠"이 부분문자열로 걸리는지도 함께 본다 —
+      결함 45 와 같은 부류의 회귀 방어.
+    evidence: []

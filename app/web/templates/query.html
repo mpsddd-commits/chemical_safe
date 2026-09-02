@@ -1,0 +1,113 @@
+{% extends "base.html" %}
+{% block title %}safeenv — 질의{% endblock %}
+
+{#
+  P5 (FR-14, FR-44). Two display rules here are safety requirements, not styling:
+
+  * The disclaimer is always visible and never collapsible (FR-35, BR-84). It
+    shows on refusals too.
+  * Citation badges appear only after verification (FE-16). Streamed text is
+    provisional - it has not passed the id whitelist (SP-8) or grounding
+    verification (BR-85~87) - so showing badges early would let a user read and
+    trust a citation that is about to be withdrawn.
+#}
+
+{% block content %}
+<section class="query-page" data-testid="query-page">
+  <form id="query-form" class="query-form" data-testid="query-form"
+        action="/api/query" method="post">
+    <label for="question" class="sr-only">질문</label>
+    <input type="text" id="question" name="question" data-testid="query-input"
+           maxlength="{{ query_max_chars }}" autocomplete="off"
+           placeholder="예: 황산 취급 시 보호구는?" required
+           value="{{ question or '' }}">
+    <button type="submit" data-testid="query-submit">질의</button>
+  </form>
+
+  {% if error %}
+  <p class="banner-warning" data-testid="query-error">{{ error }}</p>
+  {% endif %}
+
+  <!-- FR-35 / BR-84 - always present, never collapsed. -->
+  <p class="disclaimer" data-testid="disclaimer">
+    ⚠️ 이 답변은 참고용입니다. 실제 취급 시 반드시 해당 물질의 MSDS 원문과
+    관련 법령을 확인하십시오.
+  </p>
+
+  <p class="query-status" data-testid="query-status" hidden></p>
+
+  {#- The no-JavaScript path renders the same QueryService result server-side
+      (DD-17). The sections below are empty and hidden when JS is driving. -#}
+  <section class="answer" data-testid="answer-section"
+           {% if not (result and not refused) %}hidden{% endif %}>
+    <h2>답변</h2>
+    <div id="answer-body" data-testid="answer-body">
+      {%- if result and not refused -%}
+        {%- set ranks = {} -%}
+        {%- for c in result.citations -%}
+          {%- if c.chunk_id not in ranks -%}
+            {%- set _ = ranks.update({c.chunk_id: ranks|length + 1}) -%}
+          {%- endif -%}
+        {%- endfor -%}
+        {% for s in result.sentences %}
+        <p class="answer-sentence" data-testid="answer-sentence">{{ s.text }}
+          {%- for cid in s.chunk_ids %}<sup class="citation-badge"
+             data-testid="citation-badge">[{{ ranks.get(cid, '?') }}]</sup>{% endfor %}
+        </p>
+        {% endfor %}
+      {%- endif -%}
+    </div>
+    <!-- FE-18 / BR-88 - a removed sentence is reported, never silently dropped. -->
+    <p class="notice-removed" data-testid="removed-notice"
+       {% if not (result and result.removed_count) %}hidden{% endif %}>
+      {%- if result and result.removed_count -%}
+      ℹ️ 근거가 확인되지 않은 문장 {{ result.removed_count }}개를 제외했습니다.
+      {%- endif -%}
+    </p>
+  </section>
+
+  <section class="evidence" data-testid="evidence-section"
+           {% if not (result and result.citations) %}hidden{% endif %}>
+    <h2>근거</h2>
+    <ol id="evidence-list" data-testid="evidence-list">
+      {%- if result -%}
+        {%- set seen = [] -%}
+        {% for c in result.citations %}
+          {%- if c.chunk_id not in seen -%}
+            {%- set _ = seen.append(c.chunk_id) -%}
+        <li data-chunk-id="{{ c.chunk_id }}" data-testid="evidence-card">
+          <strong>{{ c.title or "(제목 없음)" }}</strong>
+          {#- BR-90: written out, never blank. A blank reads as a load failure. -#}
+          <div class="evidence-label">{{ c.section_code or "섹션 정보 없음" }}</div>
+          <blockquote>{{ c.snippet }}</blockquote>
+          <a href="{{ c.source_url }}" target="_blank" rel="noopener noreferrer">🔗 원문 보기</a>
+        </li>
+          {%- endif -%}
+        {% endfor %}
+      {%- endif -%}
+    </ol>
+  </section>
+
+  <section class="refusal" data-testid="refusal-section"
+           {% if not refused %}hidden{% endif %}>
+    <p class="refusal-headline" data-testid="refusal-headline">
+      ⓘ 이 질문에 답할 근거를 찾지 못했습니다.
+    </p>
+    {#- Internal reason codes never reach the screen. -#}
+    <p data-testid="refusal-reason">{% if refused %}사유: {{ refusal_text }}{% endif %}</p>
+    <!-- BR-75 - "I don't know" with nowhere to go is worse than a search engine. -->
+    <p>대신 아래 문서를 직접 확인해 보실 수 있습니다:</p>
+    <ul id="refusal-links" data-testid="refusal-links">
+      {%- if refused -%}
+        {% for l in result.links %}
+        <li><a href="{{ l.source_url }}" target="_blank" rel="noopener noreferrer">
+          {{ l.title or l.source_url }}{% if l.section_code %} {{ l.section_code }}{% endif %}
+        </a></li>
+        {% endfor %}
+      {%- endif -%}
+    </ul>
+  </section>
+</section>
+
+<script src="/static/query.js" defer></script>
+{% endblock %}

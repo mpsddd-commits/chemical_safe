@@ -1,0 +1,61 @@
+{% extends "base.html" %}
+{% from "partials/macros.html" import status_badge, progress_bar %}
+{% block title %}작업 · safeenv{% endblock %}
+
+{% block content %}
+<h1>작업</h1>
+
+{# Plain GET form: filtering works with JavaScript disabled. #}
+<form method="get" action="/admin/jobs" class="filter-form" data-testid="job-filter-form">
+  <fieldset>
+    <legend>상태</legend>
+    {% for s in statuses %}
+      <label>
+        <input type="checkbox" name="status" value="{{ s }}"
+               data-testid="job-filter-status-{{ s }}"
+               {% if s in selected_status %}checked{% endif %}>
+        {{ status_badge(s) }}
+      </label>
+    {% endfor %}
+  </fieldset>
+  <label for="kind-select">종류</label>
+  <select id="kind-select" name="kind" data-testid="job-filter-kind-select">
+    <option value="">전체</option>
+    {% for k in kinds %}
+      <option value="{{ k }}" {% if k == selected_kind %}selected{% endif %}>{{ k }}</option>
+    {% endfor %}
+  </select>
+  <button type="submit" data-testid="job-filter-submit-button">적용</button>
+  <a href="/admin/jobs" data-testid="job-filter-reset-link">초기화</a>
+</form>
+
+<table data-testid="job-table">
+  <thead>
+    <tr>
+      <th>ID</th><th>종류</th><th>상태</th><th>진행률</th>
+      <th>성공</th><th>건너뜀</th><th>실패</th><th>생성</th>
+    </tr>
+  </thead>
+  <tbody>
+  {% for job in jobs %}
+    {% set done = job.success_count + job.skipped_count + job.failure_count %}
+    <tr data-testid="job-row-{{ job.id }}">
+      <td><a href="/admin/jobs/{{ job.id }}" data-testid="job-link-{{ job.id }}">#{{ job.id }}</a></td>
+      <td>{{ job.kind }}</td>
+      <td>{{ status_badge(job.status) }}</td>
+      <td class="progress-cell">
+        {{ progress_bar(job.ratio, job.total_count, done, job.status) }}
+      </td>
+      <td>{{ job.success_count }}</td>
+      <td>{{ job.skipped_count }}</td>
+      <td class="{{ 'emphasis' if job.failure_count else '' }}">{{ job.failure_count }}</td>
+      <td class="muted small">{{ job.created_at.strftime('%Y-%m-%d %H:%M') }}</td>
+    </tr>
+  {% else %}
+    <tr><td colspan="8" class="muted" data-testid="job-table-empty">
+      조건에 맞는 작업이 없습니다.
+    </td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% endblock %}

@@ -1,0 +1,28 @@
+# secrets — NFR-14
+.env
+docker-compose.override.yml
+
+# runtime data
+# `data/originals` is the collected corpus and IS committed (2026-09-02):
+# re-indexing needs the retained originals (FQ-8=A), and without them a clone
+# has to re-collect from the public APIs before it can do anything. Scanned
+# before committing - no API key appears in any of the 82 files, and the 70
+# JSON responses carry no key-bearing URLs.
+data/*
+!data/originals/
+logs/
+backups/
+models/
+
+# CI 가 pyproject 에서 생성하는 부산물 (워크플로 참조)
+ci-requirements.txt
+
+# python
+.hypothesis/
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/

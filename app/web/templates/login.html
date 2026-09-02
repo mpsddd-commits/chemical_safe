@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+{% block title %}로그인 · safeenv{% endblock %}
+
+{#
+  P8 로그인 (FR-31).
+
+  실패 메시지는 한 종류다(BR-134). "없는 계정"과 "틀린 비밀번호"를 구분하면
+  이 폼이 가입 여부 확인 도구가 된다.
+  이메일은 되돌려 넣고 비밀번호는 넣지 않는다.
+#}
+{% block content %}
+<section class="card" data-testid="login-panel">
+  <h1>로그인</h1>
+
+  {% if error %}
+  <p class="error" data-testid="login-error">{{ error }}</p>
+  {% endif %}
+
+  <form method="post" action="/login" data-testid="login-form">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <input type="hidden" name="next" value="{{ next or '/' }}">
+
+    <label for="email">이메일</label>
+    <input id="email" name="email" type="email" required autocomplete="username"
+           value="{{ email or '' }}" data-testid="login-email">
+
+    <label for="password">비밀번호</label>
+    <input id="password" name="password" type="password" required
+           autocomplete="current-password" data-testid="login-password">
+
+    <button type="submit" data-testid="login-submit">로그인</button>
+  </form>
+
+  <p class="muted">계정이 없으신가요? <a href="/register">가입</a></p>
+</section>
+{% endblock %}

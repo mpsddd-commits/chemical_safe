@@ -1,0 +1,37 @@
+{# Shared render helpers. Kept as macros so later units can reuse them without
+   copying markup (u2 usage screen, u4 evaluation screen). #}
+
+{% set STATUS_LABELS = {
+  'pending': '대기',
+  'running': '진행 중',
+  'succeeded': '완료',
+  'partial': '부분 완료',
+  'failed': '실패',
+  'skipped': '변경 없음',
+  'allowed': '허용',
+  'blocked': '차단',
+  'unknown': '미확인',
+  'transient': '일시 오류',
+  'permanent': '영구 오류',
+  'policy_blocked': '정책 차단'
+} %}
+
+{# Colour never carries meaning on its own - the label is always rendered. #}
+{% macro status_badge(status) -%}
+<span class="badge badge-{{ status }}" data-testid="status-badge-{{ status }}">
+  {{ STATUS_LABELS.get(status, status) }}
+</span>
+{%- endmacro %}
+
+{# BR-50: a job with no targets shows 0% and says "대상 없음" rather than
+   rendering an empty bar that looks like a stalled run. #}
+{% macro progress_bar(ratio, total, done, status) -%}
+{% set pct = (ratio * 100) | round(0, 'floor') | int %}
+<div class="progress" data-testid="progress-bar" role="progressbar"
+     aria-valuenow="{{ pct }}" aria-valuemin="0" aria-valuemax="100">
+  <div class="progress-fill progress-{{ status }}" style="width: {{ pct }}%"></div>
+</div>
+<span class="progress-label" data-testid="progress-label">
+  {% if total == 0 %}대상 없음 (0%){% else %}{{ pct }}% · {{ done }}/{{ total }}{% endif %}
+</span>
+{%- endmacro %}

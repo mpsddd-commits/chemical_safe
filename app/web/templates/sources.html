@@ -1,0 +1,95 @@
+{% extends "base.html" %}
+{% from "partials/macros.html" import status_badge %}
+{% block title %}소스 · safeenv{% endblock %}
+
+{% block content %}
+<h1>수집 소스</h1>
+
+<p class="muted">
+  정책상 차단된 소스와 인증키가 없는 소스는 수집 버튼이 비활성화됩니다.
+  우회 실행 수단은 제공하지 않습니다.
+</p>
+
+<table data-testid="source-table">
+  <thead>
+    <tr>
+      <th>소스</th>
+      <th>유형</th>
+      <th>정책</th>
+      <th>인증키</th>
+      <th>마지막 수집</th>
+      <th>수집 실행</th>
+    </tr>
+  </thead>
+  <tbody>
+  {% for source in sources %}
+    {% set blocked = source.policy_status == 'blocked' %}
+    {% set key_missing = source.requires_api_key and not source.api_key_configured %}
+    {% set disabled = blocked or key_missing or not source.enabled %}
+    <tr data-testid="source-row-{{ source.source_id }}">
+      <td>
+        <strong>{{ source.name }}</strong><br>
+        <code class="muted">{{ source.source_id }}</code>
+      </td>
+      <td>{{ source.doc_type }}</td>
+      <td>
+        {{ status_badge(source.policy_status) }}
+        {% if source.policy_reason %}
+          <div class="muted small" title="{{ source.policy_reason }}"
+               data-testid="source-policy-reason-{{ source.source_id }}">
+            {{ source.policy_reason | truncate(60) }}
+          </div>
+        {% endif %}
+      </td>
+      <td>
+        {% if not source.requires_api_key %}
+          <span class="muted">불필요</span>
+        {% elif source.api_key_configured %}
+          <span class="badge badge-succeeded">설정됨</span>
+        {% else %}
+          <span class="badge badge-failed"
+                data-testid="source-key-missing-{{ source.source_id }}">미설정</span>
+          <div class="muted small">{{ source.api_key_env }}</div>
+        {% endif %}
+      </td>
+      <td>
+        {% if source.last_collected_at %}
+          {{ source.last_collected_at.strftime('%Y-%m-%d %H:%M') }}
+        {% else %}
+          <span class="muted">없음</span>
+        {% endif %}
+      </td>
+      <td>
+        <form method="post" action="/admin/sources/{{ source.source_id }}/ingest"
+              class="inline-form"
+              data-testid="ingest-form-{{ source.source_id }}">
+          <label class="visually-hidden" for="since-{{ source.source_id }}">이후 변경분</label>
+          <input type="date" id="since-{{ source.source_id }}" name="since"
+                 max="{{ today }}"
+                 data-testid="ingest-since-input-{{ source.source_id }}"
+                 {% if disabled %}disabled{% endif %}>
+          <button type="submit"
+                  data-testid="ingest-submit-button-{{ source.source_id }}"
+                  {% if disabled %}disabled{% endif %}>
+            수집 실행
+          </button>
+        </form>
+        {% if blocked %}
+          <div class="muted small" data-testid="source-blocked-note-{{ source.source_id }}">
+            정책상 수집 불가 — 우회 실행하지 않습니다
+          </div>
+        {% elif key_missing %}
+          <div class="muted small" data-testid="source-key-note-{{ source.source_id }}">
+            인증키 미설정: <code>{{ source.api_key_env }}</code> 환경변수를 설정하세요
+          </div>
+        {% endif %}
+      </td>
+    </tr>
+  {% else %}
+    <tr><td colspan="6" class="muted" data-testid="source-table-empty">
+      등록된 소스가 없습니다.
+    </td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% endblock %}

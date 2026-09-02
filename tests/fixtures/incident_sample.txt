@@ -1,0 +1,8 @@
+accidentNo: 2024-0042
+accidentName: 황산 저장탱크 누출 사고
+occurred_at: 2024-03-11
+place: 경기도 화성시 소재 화학공장
+substances: 황산
+cause: 저장탱크 배관 이음부 부식으로 인한 누출
+damage: 작업자 2명 화학화상, 인근 주민 대피 없음
+action: 누출 부위 차단 후 중화제 살포, 오염 토양 제거

@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}safeenv{% endblock %}</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  {# ID-13 resolved in u5: accounts exist. The banner stays for anonymous
+     visitors because for them the statement is still true - public queries need
+     no login (BR-151), and loopback binding remains the only control over who
+     reaches this page at all. #}
+  {% if not user %}
+  <div class="banner-warning" data-testid="no-auth-warning">
+    <strong>로그인하지 않음 — 공개 코퍼스만 조회됩니다</strong>
+    업로드한 문서와 질의 이력은 <a href="/login">로그인</a> 후 이용할 수 있습니다.
+  </div>
+  {% endif %}
+
+  <header class="site-header">
+    <a class="brand" href="/" data-testid="site-header-brand">safeenv</a>
+    <nav data-testid="site-header-nav">
+      <a href="/" class="{{ 'current' if active == 'query' }}"
+         data-testid="nav-query-link">질의</a>
+      <a href="/substances" class="{{ 'current' if active == 'substances' }}"
+         data-testid="nav-substances-link">물질</a>
+      <a href="/usage" class="{{ 'current' if active == 'usage' }}"
+         data-testid="nav-usage-link">사용량</a>
+      <a href="/admin" class="{{ 'current' if active == 'dashboard' }}"
+         data-testid="nav-dashboard-link">대시보드</a>
+      <a href="/admin/sources" class="{{ 'current' if active == 'sources' }}"
+         data-testid="nav-sources-link">소스</a>
+      <a href="/admin/jobs" class="{{ 'current' if active == 'jobs' }}"
+         data-testid="nav-jobs-link">작업</a>
+      {# u5. Shown to anonymous visitors too - hiding them would suggest the
+         features do not exist; clicking simply asks for a login. #}
+      <a href="/documents" class="{{ 'current' if active == 'documents' }}"
+         data-testid="nav-documents-link">내 문서</a>
+      <a href="/history" class="{{ 'current' if active == 'history' }}"
+         data-testid="nav-history-link">이력</a>
+    </nav>
+    <div class="site-account" data-testid="site-account">
+      {% if user %}
+        <span data-testid="account-email">{{ user.email }}</span>
+        <form method="post" action="/logout" class="inline-form">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token or '' }}">
+          <button type="submit" data-testid="logout-button">로그아웃</button>
+        </form>
+      {% else %}
+        <a href="/login" data-testid="login-link">로그인</a>
+      {% endif %}
+    </div>
+  </header>
+
+  <main data-testid="page-main">
+    {% block content %}{% endblock %}
+  </main>
+
+  <footer class="site-footer">
+    <span>safeenv · u5-account-upload</span>
+  </footer>
+
+  <script src="/static/app.js" defer></script>
+</body>
+</html>
