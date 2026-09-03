@@ -68,7 +68,7 @@ README 가 이미 "인증 없음"으로 고지하고 있다. 고지가 있다고
 | D1 | `doc_type_hint` 처분 | u2 가 만들고 4개 유닛 지나도록 **소비자가 없다**. 구현하거나 제거 |
 | D2 | `meta.substance_names` 처분 | 1,712청크 전부 빈 배열. 색인이 채우지 않는다 |
 | D3 | `pip install -e .` 패키징 | 최상위 디렉터리 다수로 setuptools 자동 탐색 실패. **`pyproject.toml` 은 빌드 지문에 포함되므로 승격 대기 중에는 건드리지 말 것** |
-| D4 | `.gitattributes` 추가 | CRLF 경고 다수. 다른 OS 에서 클론할 때 필요 |
+| D4 | `.gitattributes` 추가 (`* text=auto eol=lf`) | **단순 정리가 아니다.** `core.autocrlf=true` + 혼재된 작업 트리(app/ LF, pyproject.toml CRLF)라 체크아웃 한 번이 빌드 지문을 바꾼다 — 2026-09-03 실측: LF 113파일이 CRLF 가 되면 `03bab957bade` → `7b008836585f`. 그러면 코드를 안 고쳤는데 승격이 막힌다. **진행 중 평가의 승격이 끝난 뒤에 할 것** — 이 작업 자체가 재정규화를 일으킨다 |
 | D5 | `safeenv/` 백업 폴더 정리 | 이전 완료 확인 후. 지금 지우면 되돌릴 곳이 없다 |
 | D6 | README 스크린샷·아키텍처 다이어그램 | 공개 저장소의 첫인상 |
 
