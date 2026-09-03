@@ -120,6 +120,27 @@ docker compose up -d --build app worker
 
 ---
 
+## 3b. D5 — `safeenv/` 정리 (자동화됨)
+
+```bash
+scripts/retire_safeenv.sh            # 검사만
+scripts/retire_safeenv.sh --apply    # 검사 통과 시 실제 정리
+```
+
+**되돌릴 필요가 없다는 것을 증명한 뒤에만 지운다.** 검사 셋 중 하나라도
+실패하면 아무것도 하지 않는다:
+
+1. 스택이 옛 경로를 마운트하고 있지 않은가 (이전이 살아 있는가)
+2. safeenv 에만 있는 파일이 0개인가 (캐시·로그 제외)
+3. 이 저장소에 커밋이 있는가
+
+2026-09-03 실측: 유일 파일 **0개**, 내용이 다른 5개는 전부 chemical_safe 쪽이
+최신이다. 붉은불도 확인했다 — safeenv 에 파일을 하나 만들면 종료코드 1 로
+거부하고 파일명을 출력한다.
+
+유일하게 저장소에 없는 것은 `logs/safeenv.log`(3.6MB, 8/20~9/2 운영 로그,
+`.gitignore` 대상)다. **지우지 않고** `logs/safeenv-pre-migration.log` 로 옮긴다.
+
 ## 4. 백로그 정리 (D4 뒤, 마지막 커밋)
 
 `aidlc-docs/operations/backlog.md` 를 다시 쓴다.
