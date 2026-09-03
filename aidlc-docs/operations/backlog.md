@@ -20,6 +20,10 @@
 
 ---
 
+> **세션이 없어도 진행할 수 있다.** 순서와 명령은
+> `operations/runbook-next-batch.md`, 시간에 쫓기는 승격은
+> `scripts/resume_and_promote.sh 387` 하나로 끝난다.
+
 ## A. 진행 중 — 내일 자동 재개 (커밋 2~3개)
 
 | # | 항목 | 비고 |
