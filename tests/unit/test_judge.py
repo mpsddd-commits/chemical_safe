@@ -8,11 +8,14 @@ that untrusted text reaching it is escaped.
 
 from __future__ import annotations
 
+import logging
+
 import pytest
 
 from app.core.types import LlmPurpose
-from app.evaluation.judge import LLMJudge
+from app.evaluation.judge import MAX_EVIDENCE_CHARS, LLMJudge
 from app.evaluation.types import EvidenceRef, Expects, GoldenQuestion, Judgement
+from app.services.evaluation_service import judge_evidence
 
 QUESTION = GoldenQuestion(
     id="law-01",
@@ -105,6 +108,83 @@ class TestPrompt:
     def test_long_evidence_is_truncated(self):
         prompt = self._prompt(evidence=["나" * 20000])
         assert len(prompt) < 20000
+
+
+class TestEvidenceDeduplication:
+    """C7 — one snippet per chunk, so the cap is spent on distinct evidence.
+
+    `result.citations` carries one row per sentence per chunk. On run 387
+    sub-07 (query 324) that meant 8 rows over 3 chunks, chunk 17530 repeated 6
+    times for 6,288 chars, and sentence 6's evidence sitting past the 6,000
+    cap where the judge never saw it — then marked unfaithful for it. Replayed
+    against those rows the joined evidence goes 9,007 → 3,732 chars.
+    """
+
+    def _citations(self, *pairs):
+        return [
+            {"sentence_ordinal": i, "chunk_id": cid, "snippet": text}
+            for i, (cid, text) in enumerate(pairs)
+        ]
+
+    def test_a_chunk_cited_by_many_sentences_appears_once(self):
+        cites = self._citations((17530, "가"), (17530, "가"), (17530, "가"))
+        assert judge_evidence(cites) == ["가"]
+
+    def test_distinct_chunks_are_all_kept_in_first_cited_order(self):
+        cites = self._citations(
+            (17530, "가"), (17144, "나"), (17530, "가"), (17152, "다")
+        )
+        assert judge_evidence(cites) == ["가", "나", "다"]
+
+    def test_the_sub_07_shape_fits_under_the_cap(self):
+        """The measured citation pattern, at the measured sizes."""
+        cites = self._citations(
+            (17530, "가" * 1048),
+            (17530, "가" * 1048),
+            (17530, "가" * 1048),
+            (17530, "가" * 1048),
+            (17144, "나" * 1260),
+            (17530, "가" * 1048),
+            (17530, "가" * 1048),
+            (17152, "다" * 1410),
+        )
+        texts = judge_evidence(cites)
+        assert len(texts) == 3
+        # Chunk 17152 is sentence 6's evidence; before the fix it never arrived.
+        assert "다" * 1410 in texts
+        assert len("\n\n---\n\n".join(texts)) < MAX_EVIDENCE_CHARS
+
+    def test_rows_without_a_chunk_id_fall_back_to_the_snippet(self):
+        cites = [
+            {"chunk_id": None, "snippet": "가"},
+            {"chunk_id": None, "snippet": "가"},
+            {"chunk_id": None, "snippet": "나"},
+        ]
+        assert judge_evidence(cites) == ["가", "나"]
+
+    def test_two_chunks_are_not_merged_by_an_identical_snippet(self):
+        """Deduplication is on the chunk, not on the text it happens to hold."""
+        assert judge_evidence(self._citations((1, "같은 문장"), (2, "같은 문장"))) == [
+            "같은 문장",
+            "같은 문장",
+        ]
+
+
+class TestTruncationIsNotSilent:
+    def test_hitting_the_cap_warns_with_the_dropped_count(self, caplog):
+        """C7 — the cap used to bite silently, so evidence the judge never saw
+        came back as a faithfulness failure and read as a quality drop."""
+        with caplog.at_level(logging.WARNING, logger="app.evaluation.judge"):
+            LLMJudge(FakeLLM()).judge(QUESTION, "답변", ["나" * 8000])
+        record = next(r for r in caplog.records if r.msg == "judge_evidence_truncated")
+        assert record.dropped_chars == 8000 - MAX_EVIDENCE_CHARS
+        assert record.evidence_chars == 8000
+        assert record.question_id == "law-01"
+
+    def test_evidence_under_the_cap_stays_quiet(self, caplog):
+        with caplog.at_level(logging.WARNING, logger="app.evaluation.judge"):
+            LLMJudge(FakeLLM()).judge(QUESTION, "답변", ["나" * 100])
+        assert not [r for r in caplog.records if r.msg == "judge_evidence_truncated"]
 
 
 class TestPurpose:

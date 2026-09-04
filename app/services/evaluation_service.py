@@ -53,6 +53,43 @@ from app.rag.prompts import shared_repository
 log = get_logger(__name__)
 
 
+def judge_evidence(citations: list[dict]) -> list[str]:
+    """One snippet per chunk, in first-cited order (C7).
+
+    `result.citations` holds one row **per sentence per chunk**, so a chunk
+    cited by four sentences contributes its snippet four times. The judge sees
+    `_render`'s `MAX_EVIDENCE_CHARS` slice of the joined text, and the
+    duplicates spend that budget without telling the judge anything new.
+
+    Measured on run 387 sub-07 (query 324): 8 citations over 3 distinct chunks.
+    Chunk 17530 repeated 6 times for 6,288 chars on its own, pushing the joined
+    length to 9,007 - 3,007 past the 6,000 cap. Sentence 6's evidence (chunk
+    17152) sat wholly beyond it, so the judge marked that sentence unfaithful
+    for evidence it was never shown. Deduplicated the same rows come to 3,732
+    and all three chunks arrive. sub-08 (query 308) had the same shape: 8
+    citations, 2 distinct chunks, 7,565 -> 1,235, with sentence 7's evidence
+    (chunk 17529) going from cut off to included. The verifier reads whole
+    chunks and had judged both sentences supported, so this was a measurement
+    defect, not a quality one.
+
+    Deduplicated on `chunk_id` rather than on the snippet string: the same
+    chunk can arrive with different snippets, and it is the chunk that is the
+    unit of evidence. Rows without a `chunk_id` fall back to the string so an
+    unidentified snippet is still not repeated.
+    """
+    seen: set = set()
+    texts: list[str] = []
+    for citation in citations:
+        snippet = str(citation.get("snippet") or "")
+        chunk_id = citation.get("chunk_id")
+        key = ("chunk", chunk_id) if chunk_id is not None else ("text", snippet)
+        if key in seen:
+            continue
+        seen.add(key)
+        texts.append(snippet)
+    return texts
+
+
 class _NoLLM:
     """BR-119 made enforceable rather than hoped for.
 
@@ -296,7 +333,7 @@ class EvaluationService:
                 obs_session=obs,
             )
             result = service.answer(question.question, Scope.public())
-            evidence_texts = [str(c.get("snippet") or "") for c in result.citations]
+            evidence_texts = judge_evidence(result.citations)
             # The judge call happens inside the observability scope so its row
             # is written with the others, and carries the query it graded.
             judgement = None

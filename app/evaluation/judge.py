@@ -68,9 +68,22 @@ class LLMJudge:
     ) -> str:
         template = self._repo.get("judge").text
         points = "\n".join(f"- {escape_for_prompt(p)}" for p in question.answer_points)
-        evidence = escape_for_prompt(
-            "\n\n---\n\n".join(evidence_texts)[:MAX_EVIDENCE_CHARS]
-        )
+        joined = "\n\n---\n\n".join(evidence_texts)
+        # C7 - the cap used to bite silently, so evidence the judge never saw
+        # came back as a faithfulness failure and looked like a quality drop.
+        # Whatever is dropped here cannot be judged, and that has to be visible
+        # in the log rather than only in the metric.
+        if len(joined) > MAX_EVIDENCE_CHARS:
+            log.warning(
+                "judge_evidence_truncated",
+                extra={
+                    "question_id": question.id,
+                    "evidence_chars": len(joined),
+                    "limit": MAX_EVIDENCE_CHARS,
+                    "dropped_chars": len(joined) - MAX_EVIDENCE_CHARS,
+                },
+            )
+        evidence = escape_for_prompt(joined[:MAX_EVIDENCE_CHARS])
         return (
             template.replace("{question}", escape_for_prompt(question.question))
             .replace("{expected_points}", points)
