@@ -21,7 +21,7 @@ from sqlalchemy.orm import Session
 from app.auth.types import AuthenticatedUser
 from app.services.substance_service import SubstanceService
 from app.substances.types import NO_DATA, SubstanceCard, SubstanceRef
-from app.web.deps import current_user
+from app.web.deps import admin_flag, current_user
 from app.web.routers.api import get_session
 
 router = APIRouter(tags=["substances"])
@@ -116,6 +116,7 @@ def search_page(
     q: str | None = Query(default=None),
     session: Session = Depends(get_session),
     user: AuthenticatedUser | None = Depends(current_user),
+    is_admin: bool = Depends(admin_flag),
 ) -> HTMLResponse:
     query = _clean_query(q)
     matches: list[SubstanceRef] = []
@@ -132,6 +133,7 @@ def search_page(
         {
             "active": "substances",
             "user": user,
+            "is_admin": is_admin,
             "query": query,
             "searched": bool(query),
             "matches": matches,
@@ -143,7 +145,11 @@ def search_page(
 
 @router.get("/substances/{substance_id}", response_class=HTMLResponse)
 def card_page(
-    request: Request, substance_id: int, session: Session = Depends(get_session)
+    request: Request,
+    substance_id: int,
+    session: Session = Depends(get_session),
+    user: AuthenticatedUser | None = Depends(current_user),
+    is_admin: bool = Depends(admin_flag),
 ) -> HTMLResponse:
     card = SubstanceService(session).card(substance_id)
     if card is None:
@@ -151,5 +157,11 @@ def card_page(
     return templates.TemplateResponse(
         request,
         "substance_card.html",
-        {"active": "substances", "card": card, "no_data": NO_DATA},
+        {
+            "active": "substances",
+            "card": card,
+            "no_data": NO_DATA,
+            "user": user,
+            "is_admin": is_admin,
+        },
     )

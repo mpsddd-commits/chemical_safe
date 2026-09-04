@@ -25,6 +25,14 @@
          data-testid="nav-query-link">질의</a>
       <a href="/substances" class="{{ 'current' if active == 'substances' }}"
          data-testid="nav-substances-link">물질</a>
+      {# B3. Admins only, and the opposite rule from the two links below: those
+         lead somewhere a login opens, these lead somewhere no amount of signing
+         in will open for a normal account. Showing them would be an invitation
+         to a 403. `is_admin` is read from the database per render, never from
+         the token, so a `revoke-admin` takes the links away on the next page.
+         The links disappearing is not the control - `require_admin` on the
+         routes is (B1/B2/B2a). This only stops advertising a locked door. #}
+      {% if is_admin %}
       <a href="/usage" class="{{ 'current' if active == 'usage' }}"
          data-testid="nav-usage-link">사용량</a>
       <a href="/admin" class="{{ 'current' if active == 'dashboard' }}"
@@ -33,6 +41,7 @@
          data-testid="nav-sources-link">소스</a>
       <a href="/admin/jobs" class="{{ 'current' if active == 'jobs' }}"
          data-testid="nav-jobs-link">작업</a>
+      {% endif %}
       {# u5. Shown to anonymous visitors too - hiding them would suggest the
          features do not exist; clicking simply asks for a login. #}
       <a href="/documents" class="{{ 'current' if active == 'documents' }}"

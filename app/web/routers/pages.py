@@ -27,7 +27,7 @@ from app.core.logging import get_logger
 from app.core.types import AnswerOutcome
 from app.db.engine import observability_scope
 from app.rag import refusal as refusal_rules
-from app.web.deps import current_user, get_session
+from app.web.deps import admin_flag, current_user, get_session
 
 log = get_logger(__name__)
 router = APIRouter(tags=["pages"])
@@ -52,18 +52,25 @@ REFUSAL_TEXT = {
 
 
 def _context(request: Request, **extra) -> dict:
+    # `is_admin` defaults to False rather than being required: a caller that
+    # forgets it hides the admin links, which is the safe direction to fail in.
     return {
         "active": "query",
         "query_max_chars": get_settings().query_max_chars,
+        "is_admin": False,
         **extra,
     }
 
 
 @router.get("/", response_class=HTMLResponse)
 def query_page(
-    request: Request, user: AuthenticatedUser | None = Depends(current_user)
+    request: Request,
+    user: AuthenticatedUser | None = Depends(current_user),
+    is_admin: bool = Depends(admin_flag),
 ) -> HTMLResponse:
-    return templates.TemplateResponse(request, "query.html", _context(request, user=user))
+    return templates.TemplateResponse(
+        request, "query.html", _context(request, user=user, is_admin=is_admin)
+    )
 
 
 @router.post("/query", response_class=HTMLResponse)
@@ -72,6 +79,7 @@ def query_submit(
     question: str = Form(...),
     session: Session = Depends(get_session),
     user: AuthenticatedUser | None = Depends(current_user),
+    is_admin: bool = Depends(admin_flag),
 ) -> HTMLResponse:
     from app.adapters.embedding_local import shared_adapter
     from app.adapters.llm_factory import build_entity_llm, build_llm, build_verify_llm
@@ -98,7 +106,7 @@ def query_submit(
         return templates.TemplateResponse(
             request,
             "query.html",
-            _context(request, question=question, error=str(exc), user=user),
+            _context(request, question=question, error=str(exc), user=user, is_admin=is_admin),
             status_code=503,
         )
     except Exception as exc:  # noqa: BLE001
@@ -106,7 +114,7 @@ def query_submit(
         return templates.TemplateResponse(
             request,
             "query.html",
-            _context(request, question=question, error=str(exc), user=user),
+            _context(request, question=question, error=str(exc), user=user, is_admin=is_admin),
             status_code=500,
         )
 
@@ -129,5 +137,6 @@ def query_submit(
             # BR-75 - a refusal always offers somewhere to go.
             links=result.links or refusal_rules.source_links([]),
             user=user,
+            is_admin=is_admin,
         ),
     )

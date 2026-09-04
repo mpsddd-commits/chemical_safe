@@ -21,6 +21,7 @@ from app.jobs.queue import TaskQueue
 from app.services.account_service import AccountService
 from app.services.document_service import DocumentService
 from app.web.deps import (
+    admin_flag,
     get_session,
     issue_csrf,
     require_user,
@@ -39,7 +40,12 @@ def _render(request: Request, template: str, **context) -> HTMLResponse:
     token = issue_csrf(request)
     status_code = context.pop("status_code", 200)
     response = templates.TemplateResponse(
-        request, template, {"csrf_token": token, **context}, status_code=status_code
+        request,
+        template,
+        # B3 - False unless the caller says otherwise, so a screen that forgets
+        # to ask hides the admin links rather than offering a 403.
+        {"csrf_token": token, "is_admin": False, **context},
+        status_code=status_code,
     )
     set_csrf_cookie(response, token)
     return response
@@ -50,6 +56,7 @@ def documents_page(
     request: Request,
     user: AuthenticatedUser = Depends(require_user),
     session: Session = Depends(get_session),
+    is_admin: bool = Depends(admin_flag),
 ) -> HTMLResponse:
     service = DocumentService(session)
     return _render(
@@ -57,6 +64,7 @@ def documents_page(
         "documents.html",
         active="documents",
         user=user,
+        is_admin=is_admin,
         documents=service.list_documents(user),
         error=request.query_params.get("error"),
     )
@@ -69,6 +77,7 @@ async def upload(
     csrf_token: str = Form(""),
     user: AuthenticatedUser = Depends(require_user),
     session: Session = Depends(get_session),
+    is_admin: bool = Depends(admin_flag),
 ):
     verify_csrf(request, csrf_token)
     data = await file.read()
@@ -87,6 +96,7 @@ async def upload(
             "documents.html",
             active="documents",
             user=user,
+            is_admin=is_admin,
             documents=DocumentService(session).list_documents(user),
             error=str(exc),
             status_code=400,
@@ -177,6 +187,7 @@ def history_page(
     request: Request,
     user: AuthenticatedUser = Depends(require_user),
     session: Session = Depends(get_session),
+    is_admin: bool = Depends(admin_flag),
 ) -> HTMLResponse:
     """P10. Only this user's questions (BR-149), re-read from what u2 stored.
 
@@ -188,5 +199,6 @@ def history_page(
         "history.html",
         active="history",
         user=user,
+        is_admin=is_admin,
         entries=AccountService(session).query_history(user),
     )

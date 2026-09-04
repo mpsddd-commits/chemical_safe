@@ -66,6 +66,18 @@ class ItemStatus(StrEnum):
     FAILED = "failed"
 
 
+class Role(StrEnum):
+    """What an account is allowed to reach - B3.
+
+    Two values and no hierarchy: there is one privileged screen group, so a rank
+    ordering would be a structure with nothing to order. `ADMIN` is granted by
+    `safeenv grant-admin`, never by registering.
+    """
+
+    USER = "user"
+    ADMIN = "admin"
+
+
 class SynonymType(StrEnum):
     KO = "ko"
     EN = "en"

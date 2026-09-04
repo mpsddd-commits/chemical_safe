@@ -151,6 +151,52 @@ def cmd_stats(_args: argparse.Namespace) -> int:
     return 0
 
 
+def _set_role(email: str, role: str) -> int:
+    """The whole of B3's bootstrap: registration makes accounts, this makes admins.
+
+    Deliberately **not** "the first account becomes the admin". That rule needs
+    no operator, which is its appeal and its defect: on an exposed instance the
+    role goes to whoever registers first. Two explicit steps - register on the
+    web form, then run this - cost one command and cannot be won by being fast.
+
+    Case is not the operator's problem: `normalise_email` is the same function
+    registration used, so `Bob@x.com` finds the row stored as `bob@x.com`
+    (BR-132). Two normalisations that disagree would be the same bug as none.
+    """
+    from app.db.repositories.accounts import UserRepo, normalise_email
+
+    address = normalise_email(email)
+    with session_scope() as session:
+        account = UserRepo(session).by_email(address)
+        if account is None:
+            # Non-zero, and it names the address as stored. An operator who
+            # typed the wrong address otherwise sees a silent success and
+            # believes an admin exists.
+            print(f"그런 계정이 없습니다: {address}", file=sys.stderr)
+            return 2
+        before = account.role
+        account.role = role
+        session.flush()
+
+    if before == role:
+        print(f"{address} 는 이미 {role} 입니다 — 바뀐 것 없음")
+    else:
+        print(f"{address} {before} → {role}")
+    return 0
+
+
+def cmd_grant_admin(args: argparse.Namespace) -> int:
+    from app.core.types import Role
+
+    return _set_role(args.email, Role.ADMIN.value)
+
+
+def cmd_revoke_admin(args: argparse.Namespace) -> int:
+    from app.core.types import Role
+
+    return _set_role(args.email, Role.USER.value)
+
+
 # Exit codes (UD-10 / NFR-26). 4 is deliberately not 1: a run that stopped
 # because the daily quota ran out has not found a quality problem, and treating
 # it as failure would leave CI permanently red on the free tier.
@@ -286,6 +332,15 @@ def build_parser() -> argparse.ArgumentParser:
     retype.set_defaults(func=cmd_retype)
 
     sub.add_parser("stats", help="색인 현황").set_defaults(func=cmd_stats)
+
+    grant = sub.add_parser("grant-admin", help="계정을 관리자로 승격 (B3)")
+    grant.add_argument("email", help="가입한 이메일")
+    grant.set_defaults(func=cmd_grant_admin)
+
+    revoke = sub.add_parser("revoke-admin", help="관리자 권한 회수 (B3)")
+    revoke.add_argument("email", help="가입한 이메일")
+    revoke.set_defaults(func=cmd_revoke_admin)
+
     evaluate = sub.add_parser("evaluate", help="골든셋 품질 평가 (FR-36~39)")
     # Mutually exclusive and neither is a default. A bare `evaluate` must not be
     # able to start a run that costs a week of free-tier quota by accident - the

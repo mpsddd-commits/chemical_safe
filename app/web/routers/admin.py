@@ -16,6 +16,7 @@ from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session
 
 from app.core.types import ItemStatus, JobKind, JobStatus
+from app.web.deps import admin_flag
 from app.web.routers.api import _job_dict, get_session
 
 router = APIRouter(tags=["admin"])
@@ -38,7 +39,11 @@ def _clean_limit(raw: int | None) -> int:
 # Moved from "/" in u2. The root belongs to the query screen (P5, FR-14) - it is
 # what this system is for, and the operations dashboard is a tool for running it.
 @router.get("/admin", response_class=HTMLResponse)
-def dashboard(request: Request, session: Session = Depends(get_session)) -> HTMLResponse:
+def dashboard(
+    request: Request,
+    session: Session = Depends(get_session),
+    is_admin: bool = Depends(admin_flag),
+) -> HTMLResponse:
     from app.services.indexing_service import IndexingService
     from app.services.ingestion_service import IngestionService
 
@@ -47,12 +52,24 @@ def dashboard(request: Request, session: Session = Depends(get_session)) -> HTML
     return templates.TemplateResponse(
         request=request,
         name="dashboard.html",
-        context={"stats": stats, "recent_jobs": recent, "active": "dashboard"},
+        # B3 - the nav on these screens needs the same flag as everywhere
+        # else, or an admin who arrives here loses the links to the other admin
+        # screens. Guarding the route itself is B1's job, not this one's.
+        context={
+            "stats": stats,
+            "recent_jobs": recent,
+            "active": "dashboard",
+            "is_admin": is_admin,
+        },
     )
 
 
 @router.get("/admin/sources", response_class=HTMLResponse)
-def sources_page(request: Request, session: Session = Depends(get_session)) -> HTMLResponse:
+def sources_page(
+    request: Request,
+    session: Session = Depends(get_session),
+    is_admin: bool = Depends(admin_flag),
+) -> HTMLResponse:
     from app.services.ingestion_service import IngestionService
 
     service = IngestionService(session)
@@ -64,6 +81,7 @@ def sources_page(request: Request, session: Session = Depends(get_session)) -> H
             "sources": service.list_sources(),
             "today": datetime.now(UTC).date().isoformat(),
             "active": "sources",
+            "is_admin": is_admin,
         },
     )
 
@@ -100,6 +118,7 @@ def jobs_page(
     kind: str | None = Query(default=None),
     limit: int | None = Query(default=None),
     session: Session = Depends(get_session),
+    is_admin: bool = Depends(admin_flag),
 ) -> HTMLResponse:
     from app.services.ingestion_service import IngestionService
 
@@ -118,6 +137,7 @@ def jobs_page(
             "selected_status": valid_status,
             "selected_kind": valid_kind,
             "active": "jobs",
+            "is_admin": is_admin,
         },
     )
 
@@ -128,6 +148,7 @@ def job_detail_page(
     job_id: int,
     status: str | None = Query(default=None),
     session: Session = Depends(get_session),
+    is_admin: bool = Depends(admin_flag),
 ) -> HTMLResponse:
     from app.services.ingestion_service import IngestionService
 
@@ -155,5 +176,6 @@ def job_detail_page(
             "is_running": progress.status
             in (JobStatus.PENDING, JobStatus.RUNNING),
             "active": "jobs",
+            "is_admin": is_admin,
         },
     )

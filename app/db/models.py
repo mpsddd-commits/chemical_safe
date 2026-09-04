@@ -38,6 +38,7 @@ from app.core.types import (
     JobKind,
     JobStatus,
     PolicyDecision,
+    Role,
     StructureStatus,
 )
 
@@ -695,6 +696,16 @@ class UserAccount(Base):
     # AP-2 - a delay, not a lockout. Reset to zero on success.
     failed_attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     last_failed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # B3. `Role.USER` reaches the query, substance, document and history
+    # screens; `Role.ADMIN` additionally reaches the admin and usage screens.
+    # A plain String rather than a native enum type, for the reason at the foot
+    # of this file: a third role later is an UPDATE, not an ALTER TYPE.
+    # `server_default` as well as `default` so that a row inserted by anything
+    # other than this mapper - psql, a restore, a future migration - still has a
+    # role. The one thing worse than the wrong role is NULL.
+    role: Mapped[str] = mapped_column(
+        String(16), nullable=False, server_default=Role.USER.value, default=Role.USER.value
+    )
 
 
 # Enum classes are imported for documentation of the allowed column values.
@@ -723,6 +734,7 @@ __all__ = [
     "PolicyCheck",
     "PolicyDecision",
     "QueryLogRow",
+    "Role",
     "Source",
     "StructureStatus",
     "Substance",

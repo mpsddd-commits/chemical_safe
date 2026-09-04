@@ -9,6 +9,9 @@ disappears.
 
 Middleware was the alternative and it needs an exemption list, which is a list
 that gets forgotten every time a screen is added.
+
+B3 adds a third, `require_admin`, for the screens where "has an account" was
+never the question being asked.
 """
 
 from __future__ import annotations
@@ -24,6 +27,7 @@ from sqlalchemy.orm import Session
 from app.auth.tokens import COOKIE_NAME, TokenService
 from app.auth.types import AuthenticatedUser
 from app.core.config import get_settings
+from app.core.types import Role
 from app.db.engine import session_scope
 
 CSRF_COOKIE = "safeenv_csrf"
@@ -57,6 +61,78 @@ def require_user(
     if user is None:
         raise LoginRequired()
     return user
+
+
+def is_admin(session: Session, user: AuthenticatedUser | None) -> bool:
+    """Does this request belong to an admin? One SELECT, or none for anonymous.
+
+    Split out of `require_admin` because the navigation needs the same answer
+    without the 403: a link nobody may follow is worse than no link.
+    """
+    if user is None:
+        return False
+    from app.db.repositories.accounts import UserRepo
+
+    account = UserRepo(session).get(user.id)
+    # A token for an account that has since been deleted is not an admin. It is
+    # also not a login prompt - `require_user` already accepted the token, and
+    # the row is simply gone.
+    return account is not None and account.role == Role.ADMIN
+
+
+def require_admin(
+    user: AuthenticatedUser = Depends(require_user),
+    session: Session = Depends(get_session),
+) -> AuthenticatedUser:
+    """B3 - logged in *and* an admin.
+
+    Two decisions worth keeping.
+
+    **403, not a redirect.** `require_user` runs first, so reaching this line
+    means the login already happened. Sending them to `/login` would show a
+    signed-in person a login form, they would sign in again, and land back
+    here - a loop whose exit is clearing the cookie. 403 says the true thing:
+    the identity is known and it is not allowed.
+
+    **The role is read from the database, never from the token.** Measured:
+    `current_user` verifies the JWT and touches no database, so a role carried
+    in the payload would stay valid until the token expires - up to 12 hours
+    (`jwt_expire_hours`). That is AP-3's known cost, accepted for identity
+    because a stolen token is an incident either way; it is not acceptable for
+    *revocation*, where the whole point is that `revoke-admin` takes effect on
+    the next request. The admin screens are a handful of low-traffic pages, so
+    one SELECT per request is cheaper than a demotion that does not demote.
+
+    `AuthenticatedUser` is deliberately left alone. It is built from the token
+    and nothing else; hanging a role on it would create a field that is filled
+    on the routes that happen to look it up and empty everywhere else, and the
+    next reader could not tell "not an admin" from "nobody asked".
+    """
+    if not is_admin(session, user):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="관리자 권한이 필요합니다.",
+        )
+    return user
+
+
+def admin_flag(user: AuthenticatedUser | None = Depends(current_user)) -> bool:
+    """`is_admin` for a template context, as a dependency the screens can take.
+
+    It opens its own session instead of taking `get_session`, for one reason:
+    `Depends(get_session)` would open a transaction on **every** page render,
+    and the busiest page here is the anonymous query screen, which today needs
+    no database session at all. Anonymous short-circuits before any connection
+    is asked for. A second concurrent session for signed-in users is the same
+    shape as `observability_scope` in the query path, which is already here.
+
+    Navigation only. It hides links; it does not guard routes - `require_admin`
+    does that, and a hidden link is not a control.
+    """
+    if user is None:
+        return False
+    with session_scope() as session:
+        return is_admin(session, user)
 
 
 def login_redirect(request: Request) -> RedirectResponse:

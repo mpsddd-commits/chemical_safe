@@ -20,6 +20,7 @@ from sqlalchemy.orm import Session
 
 from app.core.types import LlmPurpose
 from app.services.observability_service import ObservabilityService
+from app.web.deps import admin_flag
 from app.web.routers.api import get_session
 
 router = APIRouter(tags=["usage"])
@@ -71,11 +72,14 @@ def usage_page(
     from_: date | None = Query(default=None, alias="from"),
     to: date | None = Query(default=None),
     session: Session = Depends(get_session),
+    is_admin: bool = Depends(admin_flag),
 ) -> HTMLResponse:
     start, end = _window(from_, to)
     summary = ObservabilityService(session).usage(start, end)
     return templates.TemplateResponse(
         request,
         "usage.html",
-        {"active": "usage", "usage": summary},
+        # B3 - navigation only. This route is still anonymous-reachable; B2
+        # is the commit that closes it.
+        {"active": "usage", "usage": summary, "is_admin": is_admin},
     )
