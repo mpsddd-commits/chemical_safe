@@ -1,9 +1,15 @@
 """ASGI application assembly (C56 entry point).
 
 Note on binding: `APP_HOST` is 0.0.0.0 inside the container because the
-container network has to reach it. External exposure is limited entirely by the
-`127.0.0.1:` prefix in docker-compose.yml (NFR-18, ID-12). Removing that prefix
-publishes this unauthenticated admin UI to the network.
+container network has to reach it. External exposure is limited by the
+`127.0.0.1:` prefix in docker-compose.yml (NFR-18, ID-12).
+
+That prefix used to be the *only* control over the admin UI. Since B1/B2/B2a it
+is not - `/admin`, `/usage` and the `/api` router all require an admin account.
+It is still required, and for reasons the authentication does not cover:
+`/` and `/substances` are deliberately anonymous (BR-147), there is no server
+side token revocation (AP-3), and there is no TLS termination, so removing the
+prefix puts session cookies on the wire in clear text.
 """
 
 from __future__ import annotations

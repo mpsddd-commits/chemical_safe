@@ -3,6 +3,13 @@
 Server-rendered, form-driven, no JSON round-trips. Every screen works with
 JavaScript disabled; `app.js` only adds auto-refresh and snippet toggles
 (DD-17).
+
+**B1 - the whole router is admin-only.** Measured before the change: all four
+GETs answered anonymous callers with 200, and the POST that starts a collection
+job was reachable the same way. The guard is declared on `APIRouter(...)`
+rather than on each of the five handlers for the reason B2a gives: the way this
+gap reappears is somebody adding a sixth route, and a router-level default is
+the only version of the rule that they cannot skip by not knowing about it.
 """
 
 from __future__ import annotations
@@ -15,11 +22,20 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session
 
+from app.auth.types import AuthenticatedUser
 from app.core.types import ItemStatus, JobKind, JobStatus
-from app.web.deps import admin_flag
+from app.web.deps import require_admin
 from app.web.routers.api import _job_dict, get_session
 
-router = APIRouter(tags=["admin"])
+router = APIRouter(tags=["admin"], dependencies=[Depends(require_admin)])
+
+# B1 - reaching any handler in this file means `require_admin` already passed,
+# so the navigation flag is a constant here, not something to look up again.
+# It used to come from `admin_flag`, which opens its own session per render;
+# keeping that call would spend a second SELECT to re-derive an answer this
+# request has already proved, and would leave two places that could disagree
+# about whether this viewer is an admin.
+IS_ADMIN = True
 
 TEMPLATE_DIR = Path(__file__).resolve().parent.parent / "templates"
 templates = Jinja2Templates(directory=str(TEMPLATE_DIR))
@@ -42,7 +58,7 @@ def _clean_limit(raw: int | None) -> int:
 def dashboard(
     request: Request,
     session: Session = Depends(get_session),
-    is_admin: bool = Depends(admin_flag),
+    user: AuthenticatedUser = Depends(require_admin),
 ) -> HTMLResponse:
     from app.services.indexing_service import IndexingService
     from app.services.ingestion_service import IngestionService
@@ -52,14 +68,20 @@ def dashboard(
     return templates.TemplateResponse(
         request=request,
         name="dashboard.html",
-        # B3 - the nav on these screens needs the same flag as everywhere
-        # else, or an admin who arrives here loses the links to the other admin
-        # screens. Guarding the route itself is B1's job, not this one's.
+        # B1 - `user` travels with `is_admin`, because `base.html` reads both
+        # and B3 passed only the second. Measured on the running container: an
+        # admin on this page saw the admin navigation, the "로그인하지 않음"
+        # banner, and a "로그인" link, all at once - the page disagreed with
+        # itself about who was looking at it. `require_admin` in the signature
+        # rather than relying on the router-level guard alone: the handler
+        # needs the value, and FastAPI resolves the same dependency once per
+        # request, so this costs no extra query.
         context={
             "stats": stats,
             "recent_jobs": recent,
             "active": "dashboard",
-            "is_admin": is_admin,
+            "user": user,
+            "is_admin": IS_ADMIN,
         },
     )
 
@@ -68,7 +90,7 @@ def dashboard(
 def sources_page(
     request: Request,
     session: Session = Depends(get_session),
-    is_admin: bool = Depends(admin_flag),
+    user: AuthenticatedUser = Depends(require_admin),
 ) -> HTMLResponse:
     from app.services.ingestion_service import IngestionService
 
@@ -81,7 +103,8 @@ def sources_page(
             "sources": service.list_sources(),
             "today": datetime.now(UTC).date().isoformat(),
             "active": "sources",
-            "is_admin": is_admin,
+            "user": user,
+            "is_admin": IS_ADMIN,
         },
     )
 
@@ -118,7 +141,7 @@ def jobs_page(
     kind: str | None = Query(default=None),
     limit: int | None = Query(default=None),
     session: Session = Depends(get_session),
-    is_admin: bool = Depends(admin_flag),
+    user: AuthenticatedUser = Depends(require_admin),
 ) -> HTMLResponse:
     from app.services.ingestion_service import IngestionService
 
@@ -137,7 +160,8 @@ def jobs_page(
             "selected_status": valid_status,
             "selected_kind": valid_kind,
             "active": "jobs",
-            "is_admin": is_admin,
+            "user": user,
+            "is_admin": IS_ADMIN,
         },
     )
 
@@ -148,7 +172,7 @@ def job_detail_page(
     job_id: int,
     status: str | None = Query(default=None),
     session: Session = Depends(get_session),
-    is_admin: bool = Depends(admin_flag),
+    user: AuthenticatedUser = Depends(require_admin),
 ) -> HTMLResponse:
     from app.services.ingestion_service import IngestionService
 
@@ -176,6 +200,7 @@ def job_detail_page(
             "is_running": progress.status
             in (JobStatus.PENDING, JobStatus.RUNNING),
             "active": "jobs",
-            "is_admin": is_admin,
+            "user": user,
+            "is_admin": IS_ADMIN,
         },
     )

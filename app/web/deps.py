@@ -11,7 +11,9 @@ Middleware was the alternative and it needs an exemption list, which is a list
 that gets forgotten every time a screen is added.
 
 B3 adds a third, `require_admin`, for the screens where "has an account" was
-never the question being asked.
+never the question being asked. B2a adds a fourth, `require_admin_api`, which
+is the same rule with the JSON answer instead of the redirect - see its
+docstring for why the redirect could not simply be reused.
 """
 
 from __future__ import annotations
@@ -108,6 +110,46 @@ def require_admin(
     on the routes that happen to look it up and empty everywhere else, and the
     next reader could not tell "not an admin" from "nobody asked".
     """
+    if not is_admin(session, user):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="관리자 권한이 필요합니다.",
+        )
+    return user
+
+
+def require_admin_api(
+    user: AuthenticatedUser | None = Depends(current_user),
+    session: Session = Depends(get_session),
+) -> AuthenticatedUser:
+    """B2a - `require_admin` for JSON routes: 401 when anonymous, 403 when not admin.
+
+    It does not go through `require_user`, and that is the whole point.
+    `require_user` raises `LoginRequired`, which `create_app` turns into a
+    **303 to `/login`**. Measured against the running container: a client that
+    follows redirects (`curl -L`, `httpx(follow_redirects=True)`, browser
+    `fetch`) then receives the login page with status **200 and an HTML body**.
+    So "you are not authenticated" arrives at a JSON caller as a successful
+    response containing `<!doctype html>` - the caller has to sniff the body to
+    tell refusal from data. That is how `/api/sources` read as "anonymous 200"
+    in the exposure survey in the first place; a redirect here would keep the
+    same shape and only move where the HTML comes from.
+
+    401 vs 403 is kept as two distinct answers because the caller's next move
+    differs: 401 means "send a session cookie", 403 means "this cookie will
+    never be enough, stop retrying". Collapsing both into 403 would have a
+    signed-out script retry forever; collapsing both into 401 would have a
+    signed-in non-admin re-authenticate to no effect.
+
+    No `WWW-Authenticate` header: the scheme here is a session cookie issued by
+    the HTML login form, not a challenge the client can answer in-band, and a
+    `Basic` challenge would pop a browser dialog that cannot log anyone in.
+    """
+    if user is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="로그인이 필요합니다.",
+        )
     if not is_admin(session, user):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,

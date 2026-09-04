@@ -95,8 +95,13 @@ services:
       # ---------------------------------------------------------------------
       # NFR-18 / ID-12 - DO NOT REMOVE THE 127.0.0.1 PREFIX.
       # The container binds 0.0.0.0 because the compose network must reach it.
-      # This prefix is the ONLY thing keeping the (currently unauthenticated,
-      # ID-13) admin UI off the local network.
+      # This prefix used to be the ONLY thing keeping the admin UI off the
+      # local network. Since B1/B2/B2a it is not - the admin screens and the
+      # /api router require an admin account (ID-13 closed). It is still
+      # required: `/` and `/substances` stay anonymous on purpose (BR-147),
+      # tokens cannot be revoked server side (AP-3), and nothing terminates
+      # TLS here, so without the prefix session cookies cross the network in
+      # clear text.
       # ---------------------------------------------------------------------
       - "127.0.0.1:8300:8000"
     volumes:

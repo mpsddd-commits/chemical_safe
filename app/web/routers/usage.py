@@ -3,9 +3,21 @@
 The JSON and the HTML view call the same service method, so the two cannot
 drift into disagreeing about what a period cost (DD-12).
 
-⚠️ Like u1's `/admin`, this screen has no authentication until u5. Loopback
-binding (NFR-18) is the only access control, and it was verified by measurement
-in u1 Build & Test.
+**B2 - `/usage` is admin-only.** Measured before the change: this route carried
+no authentication dependency at all - not `require_user`, not even
+`current_user` - so it was the one screen where anonymous access was not a
+policy choice that had been made loosely, but a question nobody had asked. The
+u5 documents describing it as "login only" were describing an intention, not
+the code. Loopback binding (NFR-18) was the only actual control.
+
+The guard is on the handler rather than the router because this router is not
+all one thing: `/api/usage` lives here too and is **deliberately left open in
+this commit**, because the B-group design scoped B2 to `/usage` and B2a to the
+`prefix="/api"` router in `api.py`, and `/api/usage` is in neither. It is
+recorded here rather than fixed quietly: it serves the same numbers as the
+screen above it, so as of this commit the period cost is still readable by an
+anonymous caller who asks for JSON. Closing it is a decision for whoever owns
+the B-group scope, not a change to make on the way past.
 """
 
 from __future__ import annotations
@@ -18,9 +30,10 @@ from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session
 
+from app.auth.types import AuthenticatedUser
 from app.core.types import LlmPurpose
 from app.services.observability_service import ObservabilityService
-from app.web.deps import admin_flag
+from app.web.deps import require_admin
 from app.web.routers.api import get_session
 
 router = APIRouter(tags=["usage"])
@@ -72,14 +85,18 @@ def usage_page(
     from_: date | None = Query(default=None, alias="from"),
     to: date | None = Query(default=None),
     session: Session = Depends(get_session),
-    is_admin: bool = Depends(admin_flag),
+    user: AuthenticatedUser = Depends(require_admin),
 ) -> HTMLResponse:
     start, end = _window(from_, to)
     summary = ObservabilityService(session).usage(start, end)
     return templates.TemplateResponse(
         request,
         "usage.html",
-        # B3 - navigation only. This route is still anonymous-reachable; B2
-        # is the commit that closes it.
-        {"active": "usage", "usage": summary, "is_admin": is_admin},
+        # B2 - `user` alongside the flag. B3 passed `is_admin` from
+        # `admin_flag` and nothing else, which rendered an admin the signed-out
+        # banner and a "로그인" link under a navigation only admins can see.
+        # `is_admin` is a literal now for the same reason as in `admin.py`:
+        # `require_admin` has already answered it for this request, and asking
+        # `admin_flag` again would open a second session to re-derive it.
+        {"active": "usage", "usage": summary, "user": user, "is_admin": True},
     )

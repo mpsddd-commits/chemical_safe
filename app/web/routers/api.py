@@ -3,6 +3,19 @@
 Routers validate, serialise and delegate; every orchestration decision lives in
 the service layer (DD-12). The HTML routes in `admin.py` call the same service
 methods, so the two views cannot drift apart.
+
+**B2a - the whole router is admin-only.** Measured before the change: every
+route here answered anonymous callers with 200, and `POST
+/sources/{id}/ingest` was *reachable* without a session - the 409 it usually
+returns is a business answer ("this source has no key"), not a refusal, so the
+endpoint that starts a collection job was open to anyone who could reach the
+port.
+
+The dependency is on `APIRouter(...)`, not on each handler, because the failure
+mode being closed is *forgetting*. A per-route decorator is correct exactly
+until someone adds the next endpoint, and nothing about adding an endpoint
+reminds them. At the router it is the default, and opening a route back up has
+to be written down deliberately.
 """
 
 from __future__ import annotations
@@ -17,8 +30,13 @@ from app.core.types import ItemStatus, JobKind, JobStatus
 from app.db.engine import session_scope
 from app.services.indexing_service import IndexingService
 from app.services.ingestion_service import IngestionService
+from app.web.deps import require_admin_api
 
-router = APIRouter(prefix="/api", tags=["api"])
+router = APIRouter(
+    prefix="/api",
+    tags=["api"],
+    dependencies=[Depends(require_admin_api)],
+)
 
 
 def get_session() -> Session:
