@@ -4386,3 +4386,42 @@ POST /api/{id}/ingest     도달      →  401   ← 수집 실행이 열려 있
 단위 691 · 통합 108 (72 → +36) · ruff clean
 기준선 385·387 · 코퍼스 82/1,712 · 계정 0행(테스트 정리 확인)
 ```
+
+---
+
+## OPERATIONS — 관리자 계정 생성 및 종단 확인 (2026-09-04)
+
+**승인 발언**: "관리자 계정 만들고 /admin 들어가지는지 확인해줘"
+
+B3 이 도입한 부트스트랩 절차를 실제로 밟았다. 가입 폼(CSRF 포함) → CLI 승격 →
+로그인 → 각 화면 접근을 HTTP 로 확인했다.
+
+```
+가입      POST /register    303   (user_account 601, role=user)
+승격      grant-admin       mpsddd@gmail.com user → admin
+로그인    POST /login       303
+
+관리자로            익명 대조
+/admin          200      303
+/admin/sources  200       -
+/admin/jobs     200       -
+/usage          200      303
+/api/stats      200      401
+/documents      200      303
+
+nav 링크   관리자 8개 · 익명 4개
+대시보드   문서 82 · 청크 1,712 · 물질 49 — 실제 값이 렌더된다
+/api/stats {"documents":82,"chunks":1712,"substances":49,...}
+```
+
+**역할이 화면과 라우트 양쪽에서 동시에 작동한다.** B3 의 "역할은 DB 에서 읽는다"
+결정 덕에 승격이 재로그인 없이 즉시 반영됐다 — 같은 쿠키로 nav 가 4개에서
+8개가 됐다.
+
+### 남는 제약
+비밀번호 재설정이 없다(B6 미구현). 분실하면 계정을 지우고 다시 만들어야 한다:
+```
+docker compose exec -T postgres psql -U safeenv -d safeenv \
+  -c "delete from user_account where email='...'"
+```
+백로그 E5 를 완료 처리했다.
