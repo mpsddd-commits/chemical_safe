@@ -8,6 +8,11 @@
 # 사용:
 #   scripts/resume_and_promote.sh 387          # 재개 + 완주 시 승격
 #   scripts/resume_and_promote.sh 387 --no-promote
+#   scripts/resume_and_promote.sh new          # 새 --full 실행을 시작해 완주까지
+#   scripts/resume_and_promote.sh new --no-promote
+#
+# `new` 는 측정이 목적일 때 쓴다 — 수정이 지표를 움직였는지 확인하는 경우처럼.
+# 그때는 대개 `--no-promote` 가 맞다: 승격은 결과를 보고 사람이 정한다(BR-129).
 #
 # 종료코드
 #   0  완주(+승격). 또는 할당량 소진으로 오늘 몫을 다 씀 — 실패가 아니다(BR-118)
@@ -19,8 +24,8 @@ set -uo pipefail
 RUN_ID="${1:-}"
 PROMOTE=1
 [ "${2:-}" = "--no-promote" ] && PROMOTE=0
-if ! [[ "$RUN_ID" =~ ^[0-9]+$ ]]; then
-  echo "사용법: $0 <RUN_ID> [--no-promote]" >&2
+if [ "$RUN_ID" != "new" ] && ! [[ "$RUN_ID" =~ ^[0-9]+$ ]]; then
+  echo "사용법: $0 <RUN_ID|new> [--no-promote]" >&2
   exit 2
 fi
 
@@ -48,6 +53,18 @@ container_build="$(docker compose exec -T app python -c \
 tree_build="$(python -c \
   'import sys; sys.path.insert(0,"."); from app.core.build import build_id; print(build_id())' \
   2>/dev/null | tr -d '[:space:]')"
+if [ "$RUN_ID" = "new" ]; then
+  # 새 실행은 지금 배포된 코드로 측정된다. 아래 지문 검사는 컨테이너와 작업
+  # 트리가 같은지만 보면 되고, 실행 지문 비교는 실행이 생긴 뒤에 한다.
+  echo "새 --full 실행을 시작한다"
+  docker compose exec -T app python -m app.cli evaluate --full >"$LOG" 2>&1
+  RUN_ID="$(psql_q "select id from evaluation_run where mode='full' order by id desc limit 1")"
+  if ! [[ "$RUN_ID" =~ ^[0-9]+$ ]]; then
+    echo "실패: 새 실행의 id 를 조회하지 못했다. 로그: $LOG" >&2
+    exit 1
+  fi
+  echo "실행 $RUN_ID 생성"
+fi
 run_build="$(psql_q "select coalesce(build_id,'') from evaluation_run where id=$RUN_ID")"
 
 if [ -z "$container_build" ] || [ -z "$tree_build" ]; then
@@ -68,6 +85,16 @@ fi
 
 # ---- 재개 루프 ------------------------------------------------------------
 for attempt in $(seq 1 "$MAX_ATTEMPTS"); do
+  # 상태를 먼저 본다. `new` 로 시작한 실행이 곧바로 완주했는데 --resume 을
+  # 부르면 "partial 만 재개할 수 있습니다" 오류가 로그에 남아, 성공한 실행이
+  # 실패한 것처럼 읽힌다.
+  status="$(psql_q "select status from evaluation_run where id=$RUN_ID")"
+  if [ "$status" = "succeeded" ]; then
+    scored="$(psql_q "select count(*) from evaluation_item where run_id=$RUN_ID and status='done'")"
+    echo "시도 $attempt: 상태 succeeded / 채점 ${scored:-?}/30 (재개 불필요)"
+    break
+  fi
+
   docker compose exec -T app python -m app.cli evaluate --resume "$RUN_ID" >"$LOG" 2>&1
 
   status="$(psql_q "select status from evaluation_run where id=$RUN_ID")"
