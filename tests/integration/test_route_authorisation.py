@@ -311,3 +311,47 @@ class TestNoAccountsSurvive:
         # Both: the count returning to normal would also be satisfied by the
         # fixture deleting somebody else's row instead of its own.
         assert (after, leftover) == (before, 0)
+
+
+class TestNavigationHidesWhatIsNotYours:
+    """Nav links match what the visitor can actually open (2026-09-05).
+
+    Two rules, opposite in kind. Admin links lead somewhere no amount of
+    signing in opens for a normal account, so showing them invites a 403.
+    `내 문서`/`이력` lead somewhere a login opens - but the labels are
+    possessive, and there is no "mine" until there is a session.
+
+    Neither is the access control. `require_admin` and `require_user` on the
+    routes are; this only stops advertising a door.
+    """
+
+    def test_anonymous_sees_neither_admin_nor_personal_links(self, client):
+        body = client.get("/").text
+        for testid in (
+            "nav-usage-link",
+            "nav-dashboard-link",
+            "nav-sources-link",
+            "nav-jobs-link",
+            "nav-documents-link",
+            "nav-history-link",
+        ):
+            assert testid not in body, f"익명에게 {testid} 가 보인다"
+
+    def test_anonymous_still_sees_the_public_screens(self, client):
+        """BR-147 - the corpus is public and must stay reachable."""
+        body = client.get("/").text
+        assert "nav-query-link" in body
+        assert "nav-substances-link" in body
+
+    def test_a_signed_in_user_sees_personal_links_but_no_admin_links(
+        self, client, accounts
+    ):
+        body = client.get("/", headers=_as("user", accounts)).text
+        assert "nav-documents-link" in body
+        assert "nav-history-link" in body
+        assert "nav-dashboard-link" not in body
+
+    def test_an_admin_sees_both(self, client, accounts):
+        body = client.get("/", headers=_as("admin", accounts)).text
+        assert "nav-documents-link" in body
+        assert "nav-dashboard-link" in body

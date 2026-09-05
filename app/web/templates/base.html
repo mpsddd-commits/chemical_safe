@@ -42,12 +42,24 @@
       <a href="/admin/jobs" class="{{ 'current' if active == 'jobs' }}"
          data-testid="nav-jobs-link">작업</a>
       {% endif %}
-      {# u5. Shown to anonymous visitors too - hiding them would suggest the
-         features do not exist; clicking simply asks for a login. #}
+      {# Signed-in only (2026-09-05). u5 showed these to anonymous visitors on
+         the reasoning that hiding them suggests the features do not exist, and
+         that clicking merely asks for a login. Reversed on the user's call: the
+         labels are "내 문서" and "이력" - possessive, and there is no "mine"
+         until there is a session, so an anonymous visitor is offered two links
+         to someone's documents that turn out to be a login wall.
+
+         `user` reaches every rendered screen except `/login` and `/register`,
+         where the visitor is anonymous by definition and hiding is right anyway
+         (checked across all 13 TemplateResponse sites). As with `is_admin`, an
+         absent value hides rather than shows: a screen that forgets to pass
+         `user` under-offers instead of advertising a wall. #}
+      {% if user %}
       <a href="/documents" class="{{ 'current' if active == 'documents' }}"
          data-testid="nav-documents-link">내 문서</a>
       <a href="/history" class="{{ 'current' if active == 'history' }}"
          data-testid="nav-history-link">이력</a>
+      {% endif %}
     </nav>
     <div class="site-account" data-testid="site-account">
       {% if user %}
