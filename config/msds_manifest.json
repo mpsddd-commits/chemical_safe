@@ -1,6 +1,6 @@
 {
-  "_comment": "MSDS PDF targets (FR-4). Each entry becomes one SourceRef. Only `url` is required; `id` defaults to the url. The url MUST return PDF bytes directly - the adapter rejects anything whose body does not start with %PDF, so a search or detail page (.do/.php/.jsp) will not work. Do not add a source whose robots.txt disallows it (BR-04); there is no bypass.",
-  "_verified": "2026-08-24 - 기존 8건: 전부 수집·파이프라인 통과, 8/8 structured. 2026-08-30 - 신규 4건(암모니아·염소·수소·메틸에틸케톤) 추가 전에 건식 검증: 정책 통과 · %PDF 확인 · pypdf 파싱 · 섹션 14~16 structured · 본문에 CAS 존재. 선정 기준은 '물질 마스터에 있고 MSDS 가 없는 물질' 이다 - 카드가 비는 원인이 코드가 아니라 코퍼스이기 때문이다(u3 결함 44, u4 실측). 아크릴산(79-10-7)은 같은 조건의 국문 PDF 를 찾지 못해 제외했다 - 지어내지 않는다. 탈락 1건: duksanchemical.com MEK - pypdf 가 /UniKS-UTF16-H 인코딩을 지원하지 않아 텍스트 추출 0, 섹션 0 (R-2 사례).",
+  "_comment": "MSDS PDF targets (FR-4). Each entry becomes one SourceRef. Only `url` is required; `id` defaults to the url. The url MUST return PDF bytes directly - the adapter rejects anything whose body does not start with %PDF. That is the whole test; the extension is not. An earlier version of this note said \".do/.php/.jsp will not work\", generalised from KOSHA's search pages, but a script endpoint that streams the file is fine - the 2026-09-07 Daejung entries are `.php` and return %PDF-1.7 directly. What does not work is a URL that returns HTML. Do not add a source whose robots.txt disallows it (BR-04); there is no bypass.",
+  "_verified": "2026-08-24 - 기존 8건: 전부 수집·파이프라인 통과, 8/8 structured. 2026-08-30 - 신규 4건(암모니아·염소·수소·메틸에틸케톤) 추가 전에 건식 검증: 정책 통과 · %PDF 확인 · pypdf 파싱 · 섹션 14~16 structured · 본문에 CAS 존재. 선정 기준은 '물질 마스터에 있고 MSDS 가 없는 물질' 이다 - 카드가 비는 원인이 코드가 아니라 코퍼스이기 때문이다(u3 결함 44, u4 실측). 아크릴산(79-10-7)은 같은 조건의 국문 PDF 를 찾지 못해 제외했다 - 지어내지 않는다. 탈락 1건: duksanchemical.com MEK - pypdf 가 /UniKS-UTF16-H 인코딩을 지원하지 않아 텍스트 추출 0, 섹션 0 (R-2 사례). 2026-09-07 - 신규 15건(대정화금) 추가 전 건식 검증: robots.txt 없음(허용) · %PDF-1.7 확인 · **프로덕션 코드**(extract→normalize→find_sections, min_sections=8)로 15/15 structured, 전부 16항목 인식 · 본문에 CAS 존재. 42종 중 17종이 카탈로그에 있었고, 적중은 결과행(<tr>) 안에 CAS 와 SDS 링크가 함께 있을 때만 인정했다 - 검색어 반향은 적중이 아니다. 탈락 2건: 아세탈(105-57-7)·아이소펜테인(78-78-4) - PDF 가 모든 글자를 이중 렌더해(`11..화화학학제제품품`) 추출문이 배로 나오고 헤더가 하나도 안 맞는다. normalize() 에 중복 제거를 넣으면 고칠 수 있지만 `1000`을 `10`으로 만들어 정상 문서를 망가뜨리므로 넣지 않았다(백로그). 아크릴산(79-10-7)은 2026-08-30 에 '국문 PDF 없음'으로 제외했었는데 이번에 찾았다 - 없었던 것이 아니라 그때의 검색 경로가 닿지 않았던 것이다(백로그 C1 해소).",
   "documents": [
     {
       "id": "nhchem-sulfuric-acid",
@@ -73,6 +73,96 @@
       "url": "https://www.skchemicals.com/download/MSDS/CnR/MSDS_CnR_METHYL_ETHYL_KETONE.pdf",
       "title": "메틸에틸케톤 (Methyl Ethyl Ketone) - SK케미칼",
       "cas_number": "78-93-3"
+    },
+    {
+      "id": "daejung-1-chloro-2-4-dinitrobenzene",
+      "url": "https://www.daejungchem.co.kr/api/get_file.php?type=msds&SEQ=4410&FN=2",
+      "title": "1-클로로-2,4-다이나이트로벤젠 (1-Chloro-2,4-dinitrobenzene) - 대정화금",
+      "cas_number": "97-00-7"
+    },
+    {
+      "id": "daejung-2-2-azobis-isobutyronitrile",
+      "url": "https://www.daejungchem.co.kr/api/get_file.php?type=msds&SEQ=5117&FN=2",
+      "title": "2,2'-아조비스(아이소뷰티로나이트릴) (2,2'-Azobis(isobutyronitrile)) - 대정화금",
+      "cas_number": "78-67-1"
+    },
+    {
+      "id": "daejung-2-2-dimethoxypropane",
+      "url": "https://www.daejungchem.co.kr/api/get_file.php?type=msds&SEQ=2933&FN=2",
+      "title": "2,2-다이메톡시프로페인 (2,2-Dimethoxypropane) - 대정화금",
+      "cas_number": "77-76-9"
+    },
+    {
+      "id": "daejung-acetyl-chloride",
+      "url": "https://www.daejungchem.co.kr/api/get_file.php?type=msds&SEQ=4005&FN=2",
+      "title": "아세틸 클로라이드 (Acetyl chloride) - 대정화금",
+      "cas_number": "75-36-5"
+    },
+    {
+      "id": "daejung-acrylic-acid",
+      "url": "https://www.daejungchem.co.kr/api/get_file.php?type=msds&SEQ=4021&FN=2",
+      "title": "아크릴산 (Acrylic acid) - 대정화금",
+      "cas_number": "79-10-7"
+    },
+    {
+      "id": "daejung-bis-2-ethylhexyl-adipate",
+      "url": "https://www.daejungchem.co.kr/api/get_file.php?type=msds&SEQ=4695&FN=2",
+      "title": "비스(2-에틸헥실) 아디페이트 (Bis(2-ethylhexyl) adipate) - 대정화금",
+      "cas_number": "103-23-1"
+    },
+    {
+      "id": "daejung-bromoacetic-acid",
+      "url": "https://www.daejungchem.co.kr/api/get_file.php?type=msds&SEQ=5047&FN=2",
+      "title": "브로모아세트산 (Bromoacetic acid) - 대정화금",
+      "cas_number": "79-08-3"
+    },
+    {
+      "id": "daejung-caprolactam",
+      "url": "https://www.daejungchem.co.kr/api/get_file.php?type=msds&SEQ=4034&FN=2",
+      "title": "카프로락탐 (Caprolactam) - 대정화금",
+      "cas_number": "105-60-2"
+    },
+    {
+      "id": "daejung-cyclohexyl-methacrylate",
+      "url": "https://www.daejungchem.co.kr/api/get_file.php?type=msds&SEQ=4380&FN=2",
+      "title": "사이클로헥실 메타크릴레이트 (Cyclohexyl methacrylate) - 대정화금",
+      "cas_number": "101-43-9"
+    },
+    {
+      "id": "daejung-ethyl-silicate",
+      "url": "https://www.daejungchem.co.kr/api/get_file.php?type=msds&SEQ=3760&FN=2",
+      "title": "에틸 실리케이트 (Ethyl silicate) - 대정화금",
+      "cas_number": "78-10-4"
+    },
+    {
+      "id": "daejung-formamide",
+      "url": "https://www.daejungchem.co.kr/api/get_file.php?type=msds&SEQ=2774&FN=2",
+      "title": "폼아마이드 (Formamide) - 대정화금",
+      "cas_number": "75-12-7"
+    },
+    {
+      "id": "daejung-isopropylamine",
+      "url": "https://www.daejungchem.co.kr/api/get_file.php?type=msds&SEQ=3424&FN=2",
+      "title": "아이소프로필아민 (Isopropylamine) - 대정화금",
+      "cas_number": "75-31-0"
+    },
+    {
+      "id": "daejung-methylenebis-4-phenylisocyanate",
+      "url": "https://www.daejungchem.co.kr/api/get_file.php?type=msds&SEQ=3850&FN=2",
+      "title": "4,4’-디이소시안산 디페닐메탄 (Methylenebis(4-phenylisocyanate)) - 대정화금",
+      "cas_number": "101-68-8"
+    },
+    {
+      "id": "daejung-n-butyldiethanolamine",
+      "url": "https://www.daejungchem.co.kr/api/get_file.php?type=msds&SEQ=3200&FN=2",
+      "title": "N-부틸다이에탄올아민 (N-Butyldiethanolamine) - 대정화금",
+      "cas_number": "102-79-4"
+    },
+    {
+      "id": "daejung-tert-butylamine",
+      "url": "https://www.daejungchem.co.kr/api/get_file.php?type=msds&SEQ=4399&FN=2",
+      "title": "3차-뷰틸아민 (tert-Butylamine) - 대정화금",
+      "cas_number": "75-64-9"
     }
   ]
 }
