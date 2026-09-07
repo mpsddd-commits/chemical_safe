@@ -10,6 +10,7 @@ goes through full-text search.
 from __future__ import annotations
 
 import re
+from collections.abc import Sequence
 
 from sqlalchemy import Float, func, literal, or_, select
 from sqlalchemy import text as sql_text
@@ -87,6 +88,18 @@ _TITLE_MATCH_SCORE = 0.3
 _TITLE_TERM_MIN_CHARS = 5
 _TITLE_TIER_LIMIT = 5
 
+# How many rows `lookup_exact` may pull out of PostgreSQL before the round
+# robin picks from them. Unbounded would be a full scan of every chunk sharing
+# a CAS, and a bare `limit` is the defect the round robin exists to fix: it can
+# only interleave documents it was handed rows for. Ten times the limit is 300
+# rows at `keyword_top_k`=30, which reaches roughly eighteen documents of the
+# largest shape this corpus holds - a vendor MSDS is sixteen chunks - against
+# the three documents that share CAS 7664-93-9 today. The prefix is taken
+# `document_id` ascending, so if a CAS ever spans more documents than 300 rows
+# reach, the tail documents fall off the end again and this multiplier is the
+# thing to raise.
+_EXACT_FETCH_MULTIPLIER = 10
+
 # The configuration argument is `regconfig`, not text. Binding it as VARCHAR -
 # which is what a bare `literal()` does - produces
 # `function to_tsvector(character varying, text) does not exist`, and every
@@ -100,17 +113,123 @@ class KeywordIndex:
     def __init__(self, session: Session) -> None:
         self._s = session
 
-    def lookup_exact(self, term: str, field: str, scope: Scope, limit: int = 50) -> list[Candidate]:
-        """BR-38 - identifier lookup that never goes through tokenisation."""
+    def lookup_exact(
+        self,
+        term: str,
+        field: str,
+        scope: Scope,
+        limit: int = 50,
+        preferred_sections: frozenset[str] = frozenset(),
+    ) -> list[Candidate]:
+        """BR-38 - identifier lookup that never goes through tokenisation.
+
+        The chunks are taken document by document in turn. What stood here
+        before was a `LIMIT` with no `ORDER BY`, which is not a ranking at all:
+        PostgreSQL is free to return any rows it likes in any order, so *which*
+        thirty chunks survived was arbitrary - and arbitrary is a defect on the
+        days it happens to be right as much as on the days it is not, because
+        nothing about the corpus decides the answer.
+
+        Measured 2026-09-07 (run 606), sub-01 "CAS 7664-93-9 물질은 무엇인가요?":
+        two vendor MSDS documents carry that CAS at 16 and 14 chunks, exactly
+        the 30 of `keyword_top_k`, so they filled the budget between them and
+        the substance record (7 chunks) never entered the keyword list at all.
+        The record was rank 0 on the vector route, but a candidate present on
+        one route loses RRF to candidates present on both, so it never came
+        back at fusion either: sub-01's Recall@5, Recall@10 and MRR all went
+        1.000 -> 0.000. Before the corpus was re-collected those two MSDS came
+        to 28 chunks and two slots happened to be left over - the question had
+        been passing on a two-slot margin the whole time.
+
+        The round robin spends the budget across documents instead of letting
+        whichever document sorts first eat it whole. No doc_type is preferred,
+        and no per-document cap is imposed: an MSDS question needs the later
+        sections, so truncating each document at a fixed N would answer this
+        defect by creating another one. The turns simply alternate,
+        `document_id` ascending, until `limit` is filled.
+
+        `preferred_sections` orders the chunks *inside* each document (2026-09-07).
+        A name query already got this: `_resolved_record_chunks` reads the
+        question's wording and puts `substance_inhale` in front for an
+        inhalation question. A typed CAS did not, so the same question reached
+        two different orderings depending on whether the user wrote 염소 or
+        7782-50-5 - a substance record's `ordinal 0` is `substance_identity`,
+        which answers "what is this" and nothing else, and it led every time.
+        The asymmetry predates the round robin; what the round robin did was
+        remove the arbitrary order that had been hiding it. sub-07 measured
+        MRR 1.000 before (run 606) and 0.500 after (run 607), and the 1.000
+        was luck: an unordered LIMIT happened to hand back the inhalation
+        chunk first. Unlike the name path this only reorders - every chunk
+        carrying the identifier stays a candidate, because a typed identifier
+        is an explicit request for that record and BR-38 is a lookup, not a
+        shortlist.
+        """
         if field not in {"cas_number", "un_number"}:
             raise ValueError(f"unsupported exact field: {field!r}")
-        stmt = select(ChunkRow.id).where(ChunkRow.meta[field].astext == term)
+        stmt = select(
+            ChunkRow.id, ChunkRow.document_id, ChunkRow.meta["section_code"].astext
+        ).where(ChunkRow.meta[field].astext == term)
         stmt = apply_scope(stmt, scope)
-        rows = self._s.execute(stmt.limit(limit)).all()
+        # (document_id, ordinal) is what makes the fetch itself deterministic;
+        # the round robin below can only be as reproducible as its input.
+        stmt = stmt.order_by(ChunkRow.document_id, ChunkRow.ordinal)
+        rows = self._s.execute(stmt.limit(limit * _EXACT_FETCH_MULTIPLIER)).all()
+        ordered = self._sections_first(rows, preferred_sections)
         return [
-            Candidate(chunk_id=row[0], score=EXACT_MATCH_SCORE, route="keyword")
-            for row in rows
+            Candidate(chunk_id=chunk_id, score=EXACT_MATCH_SCORE, route="keyword")
+            for chunk_id in self._round_robin_by_document(ordered, limit)
         ]
+
+    @staticmethod
+    def _sections_first(
+        rows: Sequence[tuple[int, int, str | None]], preferred: frozenset[str]
+    ) -> list[tuple[int, int]]:
+        """Preferred sections to the front of their own document, then ordinal.
+
+        With no preferred section the rows are handed back untouched, in the
+        `(document_id, ordinal)` the fetch already fixed. That is the case
+        sub-01 "CAS 7664-93-9 물질은 무엇인가요?" lands in - it matches no route
+        and no MSDS topic - and it must keep landing there, because `ordinal`
+        order is what puts `substance_identity` first for the one question that
+        actually asks for it.
+
+        Otherwise the sort is stable and keyed on the document first, so
+        documents keep their turn order and each document's unpreferred chunks
+        keep their ordinal order behind its preferred ones.
+        """
+        if not preferred:
+            return [(chunk_id, document_id) for chunk_id, document_id, _ in rows]
+        ranked = sorted(rows, key=lambda row: (row[1], row[2] not in preferred))
+        return [(chunk_id, document_id) for chunk_id, document_id, _ in ranked]
+
+    @staticmethod
+    def _round_robin_by_document(rows: Sequence[tuple[int, int]], limit: int) -> list[int]:
+        """One chunk per document per turn, `document_id` ascending.
+
+        `rows` are `(chunk_id, document_id)` ordered by (`document_id`,
+        `ordinal`), so grouping in encounter order already fixes both the order
+        of the documents and the order within each one. Nothing here reads a
+        score, a doc_type or a row position from the planner - the same
+        matching set produces the same list on every run, which is the half of
+        the defect that a bigger `limit` would not have fixed.
+        """
+        if limit <= 0:
+            return []
+        by_document: dict[int, list[int]] = {}
+        for chunk_id, document_id in rows:
+            by_document.setdefault(document_id, []).append(chunk_id)
+        order = sorted(by_document)
+        deepest = max((len(chunks) for chunks in by_document.values()), default=0)
+        picked: list[int] = []
+        for turn in range(deepest):
+            for document_id in order:
+                chunks = by_document[document_id]
+                if turn >= len(chunks):
+                    continue
+                picked.append(chunks[turn])
+                if len(picked) >= limit:
+                    return picked
+        return picked
 
     def search(
         self,
@@ -133,14 +252,24 @@ class KeywordIndex:
         identifiers = self._extract_identifiers(query)
         results: dict[int, float] = {}
 
+        # One reading of the question serves both identifier paths. A typed CAS
+        # and a resolved name reach the same chunks, so they have to agree on
+        # which section the wording points at; computing it twice is how they
+        # would drift apart again.
+        route_section = self._route_section(query)
+        preferred = self._preferred_sections(query)
+        if route_section:
+            preferred.add(route_section)
+
         # Exact identifier hits rank above anything the text search returns.
         # `EXACT_MATCH_SCORE` is the marker downstream reads: `ts_rank` values
         # sit around 0.03~0.10 on this corpus, so 1.0 is unambiguous.
         for field, value in identifiers:
-            for candidate in self.lookup_exact(value, field, scope, limit=top_k):
+            for candidate in self.lookup_exact(
+                value, field, scope, limit=top_k, preferred_sections=frozenset(preferred)
+            ):
                 results[candidate.chunk_id] = EXACT_MATCH_SCORE
         if resolved_cas:
-            route_section = self._route_section(query)
             for value in resolved_cas:
                 for chunk_id in self._resolved_record_chunks(
                     value, route_section, scope, query
