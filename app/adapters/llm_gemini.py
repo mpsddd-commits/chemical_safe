@@ -46,6 +46,30 @@ DEFAULT_MODEL = "gemini-3.1-flash-lite"
 # and removed - so a config value silently emptied every answer.
 _MIN_TIMEOUT_SECONDS = 10.0
 
+# C8(a) - greedy decoding for every purpose: answer, verify, judge and entity.
+#
+# Without this the provider default applies and generation is sampling, so the
+# same question produces different sentences and stage two (BR-87) decides
+# whether *those* sentences are supported. Measured across the seven real
+# `--full` runs: the number of answer-expecting questions refused moved
+# 0, 0, 1, 1, 1, 1, 2 and the question itself moved too - msds-01, then
+# sub-04+sub-06, then sub-06 three runs running, then law-05. Between runs 387
+# and 549 nothing in the generator or the verifier changed, so that flip was
+# the same code answering twice, not a regression. A refused question leaves
+# the accuracy and faithfulness denominators, so one flip silently shifts every
+# rate by 1/24 - inside a 0.05 guard by luck, not by design.
+#
+# It is also a product property, not only a measurement convenience: in a safety
+# domain, two different answers to the same question give the reader no way to
+# know which one to act on.
+#
+# This does **not** buy bit-level determinism - the provider makes no such
+# promise at temperature 0. That is the point of pinning it anyway: if the
+# refusal set still moves after this, the cause is not sampling but a
+# verification threshold sitting on the boundary, and that is a different
+# defect with a different fix.
+_TEMPERATURE = 0.0
+
 # finish_reason values that mean "the model declined", not "the call failed".
 # Retrying any of these repeats the decision (BR-77).
 _REFUSAL_REASONS = {"SAFETY", "BLOCKLIST", "PROHIBITED_CONTENT", "SPII", "RECITATION"}
@@ -117,7 +141,9 @@ class GeminiLLMAdapter:
     def _config(self, system: str | None, schema: dict | None) -> Any:
         from google.genai import types
 
-        kwargs: dict[str, Any] = {}
+        # Unconditional, and before anything optional: every call this adapter
+        # makes is greedy, whatever the purpose or the schema (see _TEMPERATURE).
+        kwargs: dict[str, Any] = {"temperature": _TEMPERATURE}
         if system:
             # BR-94 - the fixed instruction is the cache prefix. Gemini caches
             # implicitly on a stable prefix rather than on an explicit marker,
