@@ -46,7 +46,7 @@ from app.rag.retrieval.fusion import (
 )
 from app.rag.retrieval.rerank_client import RerankClient, evidence_texts
 from app.rag.retrieval.retrievers import Retrievers
-from app.rag.types import Evidence
+from app.rag.types import Evidence, RetrievalCandidate
 from app.rag.verifier import SupportVerifier
 
 log = get_logger(__name__)
@@ -54,14 +54,54 @@ log = get_logger(__name__)
 EventSink = Callable[[str, dict], None]
 
 
+def observation_window(
+    head: list[RetrievalCandidate],
+    fused: list[RetrievalCandidate],
+    depth: int,
+) -> list[RetrievalCandidate]:
+    """C4(b) - widen what evaluation observes without widening what the answer uses.
+
+    `head` is returned first and untouched. That is the whole design, and it is
+    load-bearing: Recall@5 is read off the first five positions, so anything
+    that reorders them changes the number it is supposed to hold still.
+    Measured 2026-09-06 (runs 550 and 551): raising `FINAL_TOP_K` to 10 rebuilt
+    the head through `ensure_doc_type_spread` and moved Recall@5 from 0.967 to
+    0.933 - sub-02 gained, sub-06 and sub-07 lost. Appending cannot do that.
+
+    The tail is the fused candidates this same call already ranked and then
+    dropped, in fused order, skipping whatever the head lifted out of order
+    (BR-65a and BR-69 both promote from below, so overlap is normal, and a
+    chunk appearing twice would be counted twice by Recall@10).
+
+    Nothing is retrieved a second time. `depth` under `len(head)` truncates
+    nothing: the head is not negotiable.
+    """
+    seen = {c.chunk_id for c in head}
+    window = list(head)
+    for candidate in fused:
+        if len(window) >= depth:
+            break
+        if candidate.chunk_id in seen:
+            continue
+        seen.add(candidate.chunk_id)
+        window.append(candidate)
+    return window
+
+
 def retrieved_refs(evidence) -> list[dict]:
     """Project the candidate list onto what evaluation compares (u4).
 
-    Rank is the position the pipeline actually used, so Recall@k and MRR are
-    computed against the same ordering the answer saw. `section_code` is
-    `None` for chunks whose sections were folded by BR-31a - that is a fact
-    about the corpus, and u4 scores those documents at document level rather
-    than treating them as always-missed.
+    Ranks 0 to `final_top_k - 1` are the positions the pipeline actually used,
+    so Recall@5 and MRR are computed against the same ordering the answer saw.
+    Ranks below that are the observation tail (C4(b), `observation_top_k`):
+    real fused positions from this same call, which the answer did *not* read.
+    Recall@10 therefore asks "did retrieval find it at all", and Recall@5 asks
+    "did ranking put it where the answer could use it" - two different
+    questions, which is what BR-124 wanted from the pair.
+
+    `section_code` is `None` for chunks whose sections were folded by BR-31a -
+    that is a fact about the corpus, and u4 scores those documents at document
+    level rather than treating them as always-missed.
     """
     return [
         {
@@ -83,11 +123,19 @@ class QueryResult:
     refusal_reason: RefusalReason | None = None
     links: list[dict] = field(default_factory=list)
     removed_count: int = 0
-    # The ordered candidate list this answer was built from. u2 has no use for
-    # it; u4 does, and the alternative was for the evaluator to run retrieval a
-    # second time - which would score a *different* execution than the one that
+    # The ordered candidate list, head first (C4(b)). u2 has no use for it; u4
+    # does, and the alternative was for the evaluator to run retrieval a second
+    # time - which would score a *different* execution than the one that
     # produced the answer. DD-22 asks the evaluation to observe the real path,
     # so the real path hands out what it saw.
+    #
+    # This field is observation-only and always has been: the consumers are
+    # `evaluation_service` and `reporter`, and it is not written to `query_log`
+    # (checked 2026-09-07). So widening it past `final_top_k` is not the
+    # evaluation-only retrieval path BR-115 forbids - it is the same window,
+    # opened wider. The answer, the citations and the refusal are still decided
+    # by the head alone, and the product behaviour is byte-identical; the guard
+    # on that claim is Recall@5, which must stay at 0.967.
     retrieved: list[dict] = field(default_factory=list)
     retrieval_ms: int = 0
     total_ms: int = 0
@@ -150,7 +198,17 @@ class QueryService:
         )
 
     # ---- W7 ----
-    def retrieve(self, question: str, scope: Scope) -> tuple[list[Evidence], RetrievalMode]:
+    def retrieve(
+        self, question: str, scope: Scope
+    ) -> tuple[list[Evidence], list[Evidence], RetrievalMode]:
+        """Returns (head, observed, mode).
+
+        `head` is what the answer is built from - `final_top_k` items, exactly
+        as before. `observed` is the same head followed by the fused tail that
+        only evaluation reads (C4(b)); it is returned separately rather than
+        appended to `head` so that no caller can pass the wide list to the
+        generator by accident.
+        """
         normalised = normalize(question)
         intent = self._entities.extract(normalised)
 
@@ -180,7 +238,17 @@ class QueryService:
             if c.score >= EXACT_MATCH_SCORE
         }
         spread = ensure_subject_presence(spread, fused, subject_ids)
-        evidence = resolve_evidence(self._s, spread)
+
+        # One query for head and tail together, then split by id. Resolving the
+        # tail separately would add a round trip inside the NFR-2 budget for
+        # something only evaluation reads, and the head must not pay for the
+        # observation. Splitting by id rather than by position because
+        # `resolve_evidence` drops chunks a re-index removed mid-query.
+        head_ids = {c.chunk_id for c in spread}
+        window = observation_window(spread, fused, self._settings.observation_top_k)
+        resolved = resolve_evidence(self._s, window)
+        evidence = [e for e in resolved if e.chunk_id in head_ids]
+        tail = [e for e in resolved if e.chunk_id not in head_ids]
 
         mode = RetrievalMode.HYBRID
         if self._reranker.enabled and evidence:
@@ -190,7 +258,9 @@ class QueryService:
             if reranked:
                 mode = RetrievalMode.HYBRID_RERANKED
                 evidence = resolve_evidence(self._s, reordered)
-        return evidence, mode
+        # Rebuilt from `evidence` so the observed head reflects the reranked
+        # order the answer actually saw, not the pre-rerank one.
+        return evidence, evidence + tail, mode
 
     # ---- W7 + W8 + W9 ----
     def answer(
@@ -232,7 +302,7 @@ class QueryService:
         Everything here may raise; `answer` records the attempt either way.
         """
         retrieval_started = time.perf_counter()
-        evidence, mode = self.retrieve(question, scope)
+        evidence, observed, mode = self.retrieve(question, scope)
         retrieval_ms = int((time.perf_counter() - retrieval_started) * 1000)
         row.mode = mode.value
         # The relevance the refusal actually judged on, not the fused rank score.
@@ -245,7 +315,9 @@ class QueryService:
             row, candidate_count=len(evidence), top_score=top_score, ms=retrieval_ms
         )
         emit("retrieval", {"count": len(evidence), "ms": retrieval_ms})
-        retrieved = retrieved_refs(evidence)
+        # The wide list, not `evidence` - everything downstream of here still
+        # reads `evidence` and only `evidence`.
+        retrieved = retrieved_refs(observed)
 
         # ---- stage one refusal (BR-73) - no LLM call happens past here ----
         decision = refusal.decide(evidence, self._settings)

@@ -75,10 +75,14 @@ def aggregate(items: Sequence, mode: str, question_count: int | None = None) -> 
     done = [i for i in items if i.status == "done"]
     answered = [i for i in done if i.expects == "answer"]
     # How deep the candidate list actually went. Measured 2026-08-28: exactly 5,
-    # because the pipeline hands out `final_top_k` items of evidence and nothing
-    # downstream ever sees more. Recall@10 over a five-item list is Recall@5
-    # under a second name, and BR-124 wanted the two to *diagnose* ranking -
-    # a comparison that cannot vary diagnoses nothing.
+    # because the pipeline handed out `final_top_k` items and nothing downstream
+    # saw more - so Recall@10 was Recall@5 under a second name, and BR-124
+    # wanted the two to *diagnose* ranking. C4(b) fixed that at the source
+    # (`observation_top_k`, default 10) rather than here: the list now carries
+    # the fused tail the answer did not read, so the two k's differ. This stays
+    # a floor check, not an assumption - a run made before C4(b), or one with
+    # `OBSERVATION_TOP_K` lowered, must still report `--` rather than a number
+    # that means Recall@5.
     depth = max((len(i.retrieved or []) for i in done), default=0)
 
     metrics: dict = {

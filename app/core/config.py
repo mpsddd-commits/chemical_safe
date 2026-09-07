@@ -178,6 +178,13 @@ class Settings(BaseSettings):
     vector_top_k: int = 30
     fusion_top_k: int = 20
     final_top_k: int = 5
+    # C4(b) - how deep evaluation may *observe*, not how deep the answer reads.
+    # `final_top_k` still decides what the generator sees, what gets cited and
+    # what the refusal gate judges; this only widens the candidate list handed
+    # to `retrieval_metrics` so Recall@10 measures something Recall@5 does not.
+    # 10 because that is the k BR-124 names. Capped at `fusion_top_k` below:
+    # past that there is nothing to observe, since fusion never ranked it.
+    observation_top_k: int = 10
     rrf_k: int = 60
     # PP-3. Queries are far shorter than chunks, so this costs little next to
     # `embedding_cache_size`. The key is the *normalised* query (BR-63) - the
@@ -284,6 +291,23 @@ class Settings(BaseSettings):
     def _validate_final_top_k(cls, v: int) -> int:
         if v < 1:
             raise ValueError("FINAL_TOP_K must be >= 1")
+        return v
+
+    @field_validator("observation_top_k")
+    @classmethod
+    def _validate_observation_top_k(cls, v: int, info) -> int:
+        if v < 1:
+            raise ValueError("OBSERVATION_TOP_K must be >= 1")
+        # Field order matters here: `fusion_top_k` is declared first, so it is
+        # already validated and present in `info.data`. Asking for more depth
+        # than fusion produced is not a smaller list - it is a setting that
+        # silently does nothing, which is the kind of value that later gets
+        # read as a measurement.
+        ceiling = info.data.get("fusion_top_k")
+        if ceiling is not None and v > ceiling:
+            raise ValueError(
+                f"OBSERVATION_TOP_K must be <= FUSION_TOP_K ({ceiling}), got {v}"
+            )
         return v
 
     # ---- Accounts and uploads (u5, FR-27~33) ----

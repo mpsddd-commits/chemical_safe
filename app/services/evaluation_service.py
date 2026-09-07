@@ -284,10 +284,12 @@ class EvaluationService:
                 embedder=TracedEmbedding(shared_adapter()),
                 settings=self._settings,
             )
-            evidence, _mode = service.retrieve(question.question, Scope.public())
+            evidence, observed, _mode = service.retrieve(question.question, Scope.public())
+            # The refusal gate judges the head, exactly as it does in the answer
+            # path. `observed` is only what the metrics get to see (C4(b)).
             decision = refusal.decide(evidence, self._settings)
 
-        retrieved = [RetrievedRef.from_dict(d) for d in retrieved_refs(evidence)]
+        retrieved = [RetrievedRef.from_dict(d) for d in retrieved_refs(observed)]
         score = retrieval_metrics.score(question.evidence, retrieved, resolve)
         # There is no generation here, so the outcome is what stage one decided.
         outcome = "refused_low_relevance" if decision.refused else "answered"
@@ -558,6 +560,12 @@ class EvaluationService:
         return {
             "fusion_top_k": s.fusion_top_k,
             "final_top_k": s.final_top_k,
+            # C4(b) - Recall@10 reads exactly this many candidates, so two runs
+            # with different observation depths are measuring different things
+            # even when every other setting matches. Leaving it out would let
+            # them compare as equals, which is the failure this snapshot exists
+            # to prevent.
+            "observation_top_k": s.observation_top_k,
             "rrf_k": s.rrf_k,
             "refusal_score_threshold": s.refusal_score_threshold,
             "rerank_enabled": bool(getattr(s, "rerank_enabled", False)),
