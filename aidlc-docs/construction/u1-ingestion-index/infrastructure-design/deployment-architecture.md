@@ -101,7 +101,7 @@ safeenv_net (내부 브리지 네트워크)
 | 전체 기동 | `docker compose up -d` |
 | 워커 확장 | `docker compose up -d --scale worker=3` |
 | 로그 확인 | `docker compose logs -f app worker` |
-| 수집 실행 (CLI) | `docker compose exec app python -m app.cli ingest --source {source_id}` |
+| 수집 실행 (CLI) | `docker compose exec worker python -m app.cli ingest --source {source_id}` — **app 이 아니라 worker 다.** app 은 `originals` 가 `:ro` 라 원본 저장만 조용히 실패한다(2026-09-07 실측) |
 | 재색인 | `docker compose exec app python -m app.cli reindex --scope all` |
 | 백업 | `./scripts/backup.sh` |
 | 복원 | `./scripts/restore.sh ./backups/safeenv-{timestamp}.dump` |

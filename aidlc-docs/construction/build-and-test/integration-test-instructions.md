@@ -129,7 +129,7 @@ docker compose exec postgres psql -U safeenv -d safeenv \
 
 ```bash
 # config/msds_manifest.json 에 documents 항목 추가 후
-docker compose exec app python -m app.cli ingest --source msds_pdf
+docker compose exec worker python -m app.cli ingest --source msds_pdf
 docker compose exec app python -m app.cli stats
 ```
 
@@ -177,7 +177,7 @@ EXPLAIN SELECT id FROM chunk WHERE meta->>'cas_number' = '7664-93-9';
 매니페스트에 **유효한 PDF 2건 + 깨진 URL 1건**을 넣고 실행합니다.
 
 ```bash
-docker compose exec app python -m app.cli ingest --source msds_pdf
+docker compose exec worker python -m app.cli ingest --source msds_pdf
 ```
 
 **기대**
