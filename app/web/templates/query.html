@@ -90,9 +90,12 @@
 
   <section class="refusal" data-testid="refusal-section"
            {% if not refused %}hidden{% endif %}>
-    <p class="refusal-headline" data-testid="refusal-headline">
-      ⓘ 이 질문에 답할 근거를 찾지 못했습니다.
-    </p>
+    {#- The headline varies by reason (`REFUSAL_HEADLINE` in routers/pages.py),
+        and holds no text of its own. A fixed headline here used to tell every
+        refusal it was a missing-evidence refusal, including the one that means
+        the check never ran - the user reads the headline before the reason and
+        goes to rewrite a question that was fine. -#}
+    <p class="refusal-headline" data-testid="refusal-headline">{{ refusal_headline }}</p>
     {#- Internal reason codes never reach the screen. -#}
     <p data-testid="refusal-reason">{% if refused %}사유: {{ refusal_text }}{% endif %}</p>
     <!-- BR-75 - "I don't know" with nowhere to go is worse than a search engine. -->

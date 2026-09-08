@@ -129,6 +129,15 @@ class RefusalReason(StrEnum):
     # data to another (2026-09-02).
     UNKNOWN_SUBJECT = "unknown_subject"
     ALL_SENTENCES_UNSUPPORTED = "all_sentences_unsupported"
+    # C15 - every filtered sentence was `unverified_by_quota`, so nothing was
+    # judged at all. `all_sentences_unsupported` names a verdict this run never
+    # reached, and `verifier.py` already says the two must not be shown as one
+    # ("we judged it and it failed" vs "we never got to ask") - until 2026-09-08
+    # the stored reason made them one anyway. Measured on baseline 609: msds-03
+    # refused with a single quota-blocked sentence whose text
+    # ("톨루엔의 국내 노출기준은 TWA 50 ppm, STEL 150 ppm입니다") was correct, and it
+    # was counted into the 0.120 false-refusal rate that should have been 0.080.
+    VERIFICATION_UNAVAILABLE = "verification_unavailable"
     PROVIDER_REFUSAL = "provider_refusal"  # stop_reason == "refusal" (BR-77)
 
 

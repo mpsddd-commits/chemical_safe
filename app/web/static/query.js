@@ -24,6 +24,7 @@
   const evidenceSection = document.querySelector('[data-testid="evidence-section"]');
   const evidenceList = document.querySelector('[data-testid="evidence-list"]');
   const refusalSection = document.querySelector('[data-testid="refusal-section"]');
+  const refusalHeadline = document.querySelector('[data-testid="refusal-headline"]');
   const refusalReason = document.querySelector('[data-testid="refusal-reason"]');
   const refusalLinks = document.querySelector('[data-testid="refusal-links"]');
 
@@ -32,6 +33,12 @@
     no_candidates: "관련 문서를 찾지 못했습니다.",
     below_threshold: "검색된 문서의 관련도가 기준에 미치지 못했습니다.",
     all_sentences_unsupported: "생성된 문장이 근거로 뒷받침되지 않았습니다.",
+    // C15 - the checking step could not run. Must not read as "your question
+    // lacked evidence"; nothing was judged at all.
+    verification_unavailable:
+      "지금은 근거 검증을 할 수 없어 답변을 보류했습니다. 질문이나 자료의 문제가 " +
+      "아니라 검증 단계가 실행되지 못한 것이며, 잠시 후 다시 시도해 주시면 답변을 " +
+      "드릴 수 있습니다.",
     provider_refusal: "모델이 이 질문에 대한 답변을 거부했습니다.",
     // BR-73a. Must stay in step with REFUSAL_TEXT in web/routers/pages.py:
     // the SSR and the streaming path render the same refusal from two maps,
@@ -40,6 +47,18 @@
     unknown_subject:
       "어떤 물질에 대한 질문인지 확인하지 못했습니다. 물질명이나 CAS 번호를 함께 " +
       "적어 주시면 해당 물질의 자료로 답변합니다. 아래는 검색된 문서입니다."
+  };
+
+  // The headline the user reads first. It cannot be fixed text: a refusal that
+  // means "the check never ran" announced as "근거를 찾지 못했습니다" sends the
+  // user to rewrite a question that was never the problem, and in a safety
+  // domain that is time not spent reading the MSDS. Overrides only - a reason
+  // absent here keeps the default, which is correct for refusals that really
+  // are about missing evidence. Must stay in step with REFUSAL_HEADLINE and
+  // DEFAULT_REFUSAL_HEADLINE in web/routers/pages.py; a unit test pins them.
+  const DEFAULT_REFUSAL_HEADLINE = "ⓘ 이 질문에 답할 근거를 찾지 못했습니다.";
+  const REFUSAL_HEADLINE = {
+    verification_unavailable: "ⓘ 답변을 보류했습니다."
   };
 
   function setStatus(text) {
@@ -167,6 +186,8 @@
 
   function onRefused(data) {
     refusalSection.hidden = false;
+    refusalHeadline.textContent =
+      REFUSAL_HEADLINE[data.reason] || DEFAULT_REFUSAL_HEADLINE;
     refusalReason.textContent =
       "사유: " + (REFUSAL_TEXT[data.reason] || "답변할 근거가 부족합니다.");
     (data.links || []).forEach(function (l) {

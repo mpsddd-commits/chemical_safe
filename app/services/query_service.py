@@ -123,6 +123,17 @@ class QueryResult:
     refusal_reason: RefusalReason | None = None
     links: list[dict] = field(default_factory=list)
     removed_count: int = 0
+    # C15 - how many of `removed_count` were dropped because verification could
+    # not run, not because it ran and said no. The number existed here before
+    # 2026-09-08 but only inside the SSE frame, so nothing that reads a
+    # `QueryResult` - the evaluation above all - could see that a measurement
+    # had been interrupted. Baseline 609 hit this three times (msds-03 1 block,
+    # msds-02 5 of 13, sub-07 2 of 9) and still reported
+    # `metrics.counts.quota_exhausted: 0`, a clean 30/30.
+    #
+    # Zero on the paths that never reach verification (stage-one refusal,
+    # provider refusal): nothing was blocked because nothing was asked.
+    quota_blocked: int = 0
     # The ordered candidate list, head first (C4(b)). u2 has no use for it; u4
     # does, and the alternative was for the evaluator to run retrieval a second
     # time - which would score a *different* execution than the one that
@@ -426,9 +437,20 @@ class QueryService:
                 )
                 for ordinal, item in enumerate(verified)
             ]
+            # C15 - when *every* filtered sentence was blocked by quota, no
+            # sentence was judged, so `all_sentences_unsupported` states a
+            # verdict that was never reached. One quota block among real
+            # `unsupported` verdicts is still the unsupported refusal: at least
+            # one sentence was judged and failed, and the answer would have been
+            # partial at best.
+            reason = (
+                RefusalReason.VERIFICATION_UNAVAILABLE
+                if verified and quota_blocked == len(verified)
+                else RefusalReason.ALL_SENTENCES_UNSUPPORTED
+            )
             self._repo.refuse(
                 row,
-                RefusalReason.ALL_SENTENCES_UNSUPPORTED,
+                reason,
                 total_ms=total_ms,
                 sentences=removed_drafts,
             )
@@ -436,17 +458,21 @@ class QueryService:
             emit(
                 "refused",
                 {
-                    "reason": RefusalReason.ALL_SENTENCES_UNSUPPORTED.value,
+                    "reason": reason.value,
                     "links": refusal.source_links(evidence),
                     "quota_blocked": quota_blocked,
                 },
             )
             return QueryResult(
                 query_id=row.id,
-                outcome=AnswerOutcome.REFUSED_UNSUPPORTED,
-                refusal_reason=RefusalReason.ALL_SENTENCES_UNSUPPORTED,
+                # Read back rather than restated. The reason-to-outcome mapping
+                # lives in `QueryRepo.refuse`, and a second copy here would let
+                # the stored row and the returned result disagree.
+                outcome=AnswerOutcome(row.outcome),
+                refusal_reason=reason,
                 links=refusal.source_links(evidence),
                 removed_count=removed,
+                quota_blocked=quota_blocked,
                 retrieved=retrieved,
                 retrieval_ms=retrieval_ms,
                 total_ms=total_ms,
@@ -516,6 +542,10 @@ class QueryService:
             ],
             citations=citations,
             removed_count=removed,
+            # The partly-blocked case: msds-02 and sub-07 in run 609 answered
+            # with sentences missing because verification could not run on them.
+            # Without this the answer path reports an ordinary partial answer.
+            quota_blocked=quota_blocked,
             retrieved=retrieved,
             retrieval_ms=retrieval_ms,
             total_ms=total_ms,

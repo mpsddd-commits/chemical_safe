@@ -246,6 +246,27 @@ class EvaluationService:
                     error_kind=type(exc).__name__,
                 )
             self._store(run_id, outcome)
+            if outcome.status is ItemStatus.QUOTA_EXHAUSTED:
+                # C15 - the verifier swallowed the quota error (BR-87), so it
+                # never reaches the `except` above; `_score_full` marks the item
+                # instead. Same treatment: `quota_exhausted` keeps it out of
+                # `done` and therefore out of every metric, and `quota_hit` ends
+                # the run `partial` rather than `succeeded`.
+                #
+                # No `break`, unlike the branch above, and the difference is
+                # deliberate. There the answer itself could not be produced -
+                # the model refused to serve, so the next question would fail
+                # the same way. Here the query completed: it retrieved,
+                # generated and stored, and only some verification calls were
+                # turned away. Run 609 shows why that matters - msds-02 had 5
+                # blocked verifications against 8 that succeeded inside a single
+                # query, so the limit being hit is the per-minute one and the
+                # next question routinely goes through. Stopping on the first
+                # one would abandon a run that costs days of judge quota over a
+                # condition that clears in a minute. If the daily quota really
+                # is gone, the answer call raises on the next question and the
+                # `break` above still ends the run.
+                quota_hit = True
             attempted += 1
 
         return self._finish(run_id, mode, quota_hit)
@@ -324,6 +345,7 @@ class EvaluationService:
         from app.db.engine import observability_scope
         from app.services.query_service import QueryService
 
+        blocked = False
         with observability_scope() as obs, session_scope() as session:
             service = QueryService(
                 session,
@@ -335,12 +357,34 @@ class EvaluationService:
                 obs_session=obs,
             )
             result = service.answer(question.question, Scope.public())
+            if result.quota_blocked:
+                # C15 - this item was measured through an interrupted pipeline,
+                # so it is not a result. Whatever the outcome says, sentences
+                # were dropped without being judged: msds-03 refused on one
+                # blocked sentence in run 609 and was counted as a false
+                # refusal, msds-02 and sub-07 answered with 5 and 2 sentences
+                # missing and were counted as ordinary partial answers. The run
+                # reported `quota_exhausted: 0` and a clean 30/30.
+                #
+                # Returned before the judge on purpose: judging a truncated
+                # answer spends the scarcest quota in the system to grade a
+                # sentence set the product would not have produced.
+                log.warning(
+                    "evaluation_verification_quota_blocked",
+                    extra={
+                        "question_id": question.id,
+                        "query_id": result.query_id,
+                        "quota_blocked": result.quota_blocked,
+                        "outcome": result.outcome.value,
+                    },
+                )
+                blocked = True
             evidence_texts = judge_evidence(result.citations)
             # The judge call happens inside the observability scope so its row
             # is written with the others, and carries the query it graded.
             judgement = None
             answer_text = " ".join(s.get("text", "") for s in result.sentences).strip()
-            if question.wants_answer and answer_text:
+            if question.wants_answer and answer_text and not blocked:
                 # BR-120 - a refusal question never reaches the judge.
                 #
                 # BR-95 / FR-41 - and the judge is wrapped like every other
@@ -361,6 +405,29 @@ class EvaluationService:
                 judgement = LLMJudge(judge_llm, settings=self._settings).judge(
                     question, answer_text, evidence_texts
                 )
+
+        if blocked:
+            # Built after the scope closed, for the same reason `_calls_for` is
+            # read there below: the `llm_call` rows are not committed until then,
+            # and an item that under-reports its cost is the defect this unit
+            # was designed around.
+            #
+            # No recall, no citation precision, no `refusal_correct`. They would
+            # be arithmetic over a pipeline that stopped halfway, and
+            # `reporter.aggregate` reads every rate off `done` items, so leaving
+            # them unset is what keeps this item out of the numbers. `llm_calls`
+            # is summed over *all* items and is filled in: the calls were spent.
+            return ItemOutcome(
+                question_id=question.id,
+                category=question.category,
+                expects=question.expects,
+                status=ItemStatus.QUOTA_EXHAUSTED,
+                query_id=result.query_id,
+                outcome=result.outcome.value,
+                error_kind="verify_quota",
+                llm_calls=self._calls_for(result.query_id),
+                total_ms=int((time.perf_counter() - started) * 1000),
+            )
 
         retrieved = [RetrievedRef.from_dict(d) for d in result.retrieved]
         score = retrieval_metrics.score(question.evidence, retrieved, resolve)

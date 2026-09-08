@@ -437,3 +437,72 @@ class TestRefusalTextsAgree:
         for reason in RefusalReason:
             assert reason.value in in_py, f"pages.py 에 {reason.value} 문구 없음"
             assert reason.value in in_js, f"query.js 에 {reason.value} 문구 없음"
+
+
+class TestRefusalHeadlinesAgree:
+    """The refusal headline is the first thing read, so it must not contradict
+    the reason printed under it. Fixed headline text told every refusal it was
+    a missing-evidence refusal, including `verification_unavailable`, which is
+    the one refusal that is explicitly not the user's question's fault."""
+
+    @staticmethod
+    def _maps():
+        import re
+        from pathlib import Path
+
+        root = Path(__file__).resolve().parents[2]
+        # Text, not imports - same reason as TestRefusalTextsAgree above.
+        py = (root / "app" / "web" / "routers" / "pages.py").read_text(encoding="utf-8")
+        js = (root / "app" / "web" / "static" / "query.js").read_text(encoding="utf-8")
+
+        py_default = re.search(r'DEFAULT_REFUSAL_HEADLINE = "([^"]+)"', py).group(1)
+        js_default = re.search(r'DEFAULT_REFUSAL_HEADLINE = "([^"]+)"', js).group(1)
+
+        py_block = py.split("\nREFUSAL_HEADLINE = {", 1)[1].split("\n}", 1)[0]
+        js_block = js.split("REFUSAL_HEADLINE = {", 1)[1].split("};", 1)[0]
+        py_map = dict(re.findall(r'"(\w+)": "([^"]*)"', py_block))
+        js_map = dict(re.findall(r'(\w+): "([^"]*)"', js_block))
+        return py_default, js_default, py_map, js_map
+
+    def test_the_two_renderers_show_the_same_headlines(self):
+        py_default, js_default, py_map, js_map = self._maps()
+        assert py_default == js_default
+        assert py_map == js_map
+
+    def test_verification_unavailable_does_not_say_evidence_was_missing(self):
+        """C15's refusal means nothing was judged. A headline claiming we found
+        no evidence sends the user to rewrite a question that was fine."""
+        _, _, py_map, js_map = self._maps()
+        for name, headline in (("pages.py", py_map), ("query.js", js_map)):
+            assert "verification_unavailable" in headline, f"{name} 에 헤드라인 없음"
+            assert "근거를 찾지 못했" not in headline["verification_unavailable"], (
+                f"{name} 의 verification_unavailable 헤드라인이 사유를 반박함"
+            )
+
+    def test_every_other_reason_keeps_the_original_headline(self):
+        """Most refusals really are "we looked and found nothing", and that
+        headline is right for them. Only the reason that needs a different one
+        gets one."""
+        from app.core.types import RefusalReason
+
+        py_default, _, py_map, js_map = self._maps()
+        assert "근거를 찾지 못했습니다" in py_default
+        for reason in RefusalReason:
+            if reason is RefusalReason.VERIFICATION_UNAVAILABLE:
+                continue
+            assert reason.value not in py_map, f"pages.py 가 {reason.value} 헤드라인을 바꿈"
+            assert reason.value not in js_map, f"query.js 가 {reason.value} 헤드라인을 바꿈"
+
+    def test_the_template_holds_no_headline_text_of_its_own(self):
+        """A copy in the template would be a second owner of the sentence and
+        would go on showing through whatever pages.py chose."""
+        import re
+        from pathlib import Path
+
+        root = Path(__file__).resolve().parents[2]
+        html = (root / "app" / "web" / "templates" / "query.html").read_text(
+            encoding="utf-8"
+        )
+        body = re.sub(r"\{#.*?#\}", "", html, flags=re.DOTALL)
+        assert "근거를 찾지 못했습니다" not in body
+        assert "{{ refusal_headline }}" in body

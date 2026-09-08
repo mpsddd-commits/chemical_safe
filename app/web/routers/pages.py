@@ -39,6 +39,14 @@ REFUSAL_TEXT = {
     "no_candidates": "관련 문서를 찾지 못했습니다.",
     "below_threshold": "검색된 문서의 관련도가 기준에 미치지 못했습니다.",
     "all_sentences_unsupported": "생성된 문장이 근거로 뒷받침되지 않았습니다.",
+    # C15. Not "근거가 부족합니다": nothing was judged, so nothing was found
+    # lacking. The question was fine and the evidence was fine - the checking
+    # step could not run, and the user must not read this as their mistake.
+    "verification_unavailable": (
+        "지금은 근거 검증을 할 수 없어 답변을 보류했습니다. "
+        "질문이나 자료의 문제가 아니라 검증 단계가 실행되지 못한 것이며, "
+        "잠시 후 다시 시도해 주시면 답변을 드릴 수 있습니다."
+    ),
     "provider_refusal": "모델이 이 질문에 대한 답변을 거부했습니다.",
     # BR-73a. Worded as a request, not a dead end: the evidence found is about
     # specific substances and we could not tell which one was asked about, so
@@ -50,6 +58,26 @@ REFUSAL_TEXT = {
     ),
 }
 
+# The headline is what the user reads first, and until 2026-09-08 it was fixed
+# text in `query.html` saying every refusal was a missing-evidence refusal. C15
+# added one that is not: `verification_unavailable` means nothing was judged, so
+# the screen announced "근거를 찾지 못했습니다" and then the reason line under it
+# said the opposite. The headline wins that contest, and the user goes off to
+# rewrite a question that was never the problem - in a safety domain that is
+# time spent editing instead of reading an MSDS, for an answer that was one
+# retry away. So the headline is chosen by reason, like the reason text is.
+#
+# (Backlog D10 - naming 카드뮴 and being told we could not tell which substance
+# was asked about - is this same failure from a different cause: UNKNOWN_SUBJECT
+# covers two situations. Tracked separately; not fixed here.)
+DEFAULT_REFUSAL_HEADLINE = "ⓘ 이 질문에 답할 근거를 찾지 못했습니다."
+
+# Overrides only. A reason that is absent keeps the default, which is the right
+# sentence for every refusal that really is "we looked and found nothing".
+REFUSAL_HEADLINE = {
+    "verification_unavailable": "ⓘ 답변을 보류했습니다.",
+}
+
 
 def _context(request: Request, **extra) -> dict:
     # `is_admin` defaults to False rather than being required: a caller that
@@ -58,6 +86,9 @@ def _context(request: Request, **extra) -> dict:
         "active": "query",
         "query_max_chars": get_settings().query_max_chars,
         "is_admin": False,
+        # Present on every render so the template never has to hold a copy of
+        # the sentence; a refusal overrides it below.
+        "refusal_headline": DEFAULT_REFUSAL_HEADLINE,
         **extra,
     }
 
@@ -133,6 +164,10 @@ def query_submit(
             refusal_text=REFUSAL_TEXT.get(
                 result.refusal_reason.value if result.refusal_reason else "",
                 "답변할 근거가 부족합니다.",
+            ),
+            refusal_headline=REFUSAL_HEADLINE.get(
+                result.refusal_reason.value if result.refusal_reason else "",
+                DEFAULT_REFUSAL_HEADLINE,
             ),
             # BR-75 - a refusal always offers somewhere to go.
             links=result.links or refusal_rules.source_links([]),
