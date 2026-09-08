@@ -105,9 +105,32 @@ class QueryRepo:
         row.retrieval_ms = ms
 
     def refuse(
-        self, row: QueryLogRow, reason: RefusalReason, *, total_ms: int
+        self,
+        row: QueryLogRow,
+        reason: RefusalReason,
+        *,
+        total_ms: int,
+        sentences: list[SentenceDraft] | None = None,
     ) -> None:
-        """BR-78 - refusal is an outcome, not a failure."""
+        """BR-78 - refusal is an outcome, not a failure.
+
+        `sentences` carries whatever verification filtered out, and it exists
+        because the refusal path was breaking BR-88 on its own. `finalise`
+        already stores removed sentences with the reason a count with no rows
+        behind it cannot be audited; a refusal reports `removed_count` too and
+        stored nothing at all. Measured 2026-09-08: run 609's three refusals
+        (`query_log` 448, 450, 462) each had **zero** `answer_sentence` rows, so
+        when msds-03 and sub-04 refused in 609 and then answered in all three
+        reproductions five minutes later at temperature 0, there was nothing to
+        read - not the generated text, not the verdicts. A refusal that erases
+        its own evidence cannot be diagnosed.
+
+        Rows land on the content session, exactly as `finalise` puts them there,
+        so the refusal's sentences share the fate of an answer's sentences
+        (BR-92) rather than getting a second, weaker rule of their own. The
+        stage-one refusals pass nothing: no generation happened, so there is
+        nothing to store.
+        """
         row.outcome = (
             AnswerOutcome.REFUSED_UNSUPPORTED.value
             if reason is RefusalReason.ALL_SENTENCES_UNSUPPORTED
@@ -115,6 +138,7 @@ class QueryRepo:
         )
         row.refusal_reason = reason.value
         row.total_ms = total_ms
+        self._write_sentences(row, sentences or [])
 
     def mark_error(self, row: QueryLogRow, *, total_ms: int) -> None:
         """The query did not finish. Recorded, not silently lost.
@@ -140,8 +164,18 @@ class QueryRepo:
         """
         row.outcome = outcome.value
         row.total_ms = total_ms
+        self._write_sentences(row, sentences)
 
-        # E15~E17 go to the *content* session: this is the BR-92 unit.
+    def _write_sentences(
+        self, row: QueryLogRow, sentences: list[SentenceDraft]
+    ) -> None:
+        """E15~E17 on the *content* session: this is the BR-92 unit.
+
+        Shared by `finalise` and `refuse` so an answer's sentences and a
+        refusal's sentences are written by the same code. Two copies would drift,
+        and the drift that matters here is silent - a refusal storing rows in a
+        subtly different shape reads as a corpus fact rather than as a bug.
+        """
         for draft in sentences:
             sentence = AnswerSentenceRow(
                 query_id=row.id,

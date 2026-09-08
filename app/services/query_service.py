@@ -385,8 +385,52 @@ class QueryService:
             # BR-76 - nothing survived verification, so this is a refusal, not
             # an empty answer.
             total_ms = int((time.perf_counter() - started) * 1000)
+            if not verified:
+                # "The generator produced nothing" and "everything it produced
+                # was filtered out" both arrive here and both get recorded as
+                # `all_sentences_unsupported`, which names only the second one.
+                # They have different causes and different fixes, so they are
+                # separated in the log rather than in `RefusalReason`: a new
+                # reason would ripple into the screen text, the repository's
+                # outcome mapping and the evaluation verdicts, and baseline 609
+                # was promoted against the reasons as they stand.
+                log.warning(
+                    "empty_generation",
+                    extra={
+                        "query_id": row.id,
+                        "evidence_count": len(evidence),
+                        "question_chars": len(question),
+                    },
+                )
+            # Every filtered sentence is stored with its own verdict, the same
+            # way the answered path stores what it dropped (BR-88, see below).
+            # Until 2026-09-08 this path stored none: run 609's refusals
+            # (`query_log` 448, 450, 462) each left zero `answer_sentence` rows
+            # while returning `removed_count`, so the BR-88 comment forty lines
+            # down - "a count with no rows behind it cannot be audited" - was
+            # being broken by the branch that refuses. It cost us the only
+            # available diagnosis when msds-03 and sub-04 refused in run 609 and
+            # then answered in all three reproductions five minutes later, same
+            # code, same corpus, temperature 0.
+            #
+            # This adds observation only. The outcome, the refusal reason and
+            # the links are unchanged, and `QueryResult` below carries no
+            # sentences either way, so nothing the user sees moves.
+            removed_drafts = [
+                SentenceDraft(
+                    ordinal=ordinal,
+                    text=item.sentence.text,
+                    support=item.verdict,
+                    removed=True,
+                    citations=[],
+                )
+                for ordinal, item in enumerate(verified)
+            ]
             self._repo.refuse(
-                row, RefusalReason.ALL_SENTENCES_UNSUPPORTED, total_ms=total_ms
+                row,
+                RefusalReason.ALL_SENTENCES_UNSUPPORTED,
+                total_ms=total_ms,
+                sentences=removed_drafts,
             )
             self._repo.commit_log()
             emit(
