@@ -30,7 +30,7 @@ from app.core.types import (
     Scope,
     SupportVerdict,
 )
-from app.db.repositories.queries import QueryRepo, SentenceDraft
+from app.db.repositories.queries import CitationDraft, QueryRepo, SentenceDraft
 from app.db.repositories.traces import LlmCallRepo
 from app.indexing.keyword_index import EXACT_MATCH_SCORE
 from app.processing.stages.normalize import normalize
@@ -46,7 +46,7 @@ from app.rag.retrieval.fusion import (
 )
 from app.rag.retrieval.rerank_client import RerankClient, evidence_texts
 from app.rag.retrieval.retrievers import Retrievers
-from app.rag.types import Evidence, RetrievalCandidate
+from app.rag.types import AnswerSentence, Evidence, RetrievalCandidate
 from app.rag.verifier import SupportVerifier
 
 log = get_logger(__name__)
@@ -111,6 +111,46 @@ def retrieved_refs(evidence) -> list[dict]:
             "section_code": item.section_code,
         }
         for rank, item in enumerate(evidence)
+    ]
+
+
+def citation_drafts(
+    sentence: AnswerSentence, by_id: dict[int, Evidence]
+) -> list[CitationDraft]:
+    """What a sentence cited, snapshotted - for kept and filtered alike (C14).
+
+    Filtered sentences were stored with `citations=[]` until 2026-09-08, and
+    that is what made a false `unsupported` undiagnosable. Measured on query
+    484 (no quota contamination): five generated sentences mapped almost
+    one-to-one onto the bullets of a single evidence chunk
+
+        eyeball: ·눈에 소량은 영구적은 손상을 일으킬 것임
+        ·또한 동상을 일으킬 것임
+        ·증기상 물질은 화상과 자극을 일으킴
+        ·찬 증기는 동상을 일으킬 수 있음
+        ·홍반. 통증. 심한 깊은 화상
+
+    and four of the five came back `unsupported`. Two explanations fit equally
+    well and the stored rows separated neither. Either the generator cited a
+    *different* chunk than the one the text came from - `verify_one` judges a
+    sentence against its own `chunk_ids` and nothing else (SP-6), so on the
+    wrong chunk the verdicts were correct - or the verifier is too strict. The
+    fix for those two is not the same fix, and there was no way to tell.
+
+    C11 stored the filtered sentences for this reason (BR-88: a count with no
+    rows behind it cannot be audited). The sentence alone is not auditable
+    either: without a citation there is no `citation_snapshot`, and the
+    snapshot is the text the verifier was actually shown. So the same rule
+    applies one level down - a verdict with no evidence behind it cannot be
+    audited.
+
+    Observation only. Kept sentences get the list they always got, and what
+    the user sees is still built from `kept` alone.
+    """
+    return [
+        to_citation_draft(by_id[cid], rank)
+        for rank, cid in enumerate(sentence.chunk_ids)
+        if cid in by_id
     ]
 
 
@@ -427,13 +467,19 @@ class QueryService:
             # This adds observation only. The outcome, the refusal reason and
             # the links are unchanged, and `QueryResult` below carries no
             # sentences either way, so nothing the user sees moves.
+            #
+            # C14 - with the citation, not with `citations=[]`. The sentence
+            # text and the verdict say *what* was rejected; only the snapshot
+            # says what it was rejected *against*, and that is the half that
+            # tells a mis-citing generator apart from an over-strict verifier.
+            # See `citation_drafts`.
             removed_drafts = [
                 SentenceDraft(
                     ordinal=ordinal,
                     text=item.sentence.text,
                     support=item.verdict,
                     removed=True,
-                    citations=[],
+                    citations=citation_drafts(item.sentence, by_id),
                 )
                 for ordinal, item in enumerate(verified)
             ]
@@ -485,11 +531,7 @@ class QueryService:
         drafts: list[SentenceDraft] = []
         citations: list[dict] = []
         for ordinal, item in enumerate(kept):
-            cites = [
-                to_citation_draft(by_id[cid], rank)
-                for rank, cid in enumerate(item.sentence.chunk_ids)
-                if cid in by_id
-            ]
+            cites = citation_drafts(item.sentence, by_id)
             drafts.append(
                 SentenceDraft(
                     ordinal=ordinal,
@@ -514,6 +556,10 @@ class QueryService:
 
         # Removed sentences are stored too (BR-88): the screen states how many
         # were dropped, and a count with no rows behind it cannot be audited.
+        # With their citations since C14, for the same reason one level down -
+        # a verdict with no evidence behind it cannot be audited either. These
+        # rows are not added to `citations` below: what is stored is the audit
+        # trail, what is returned is what the user reads.
         for offset, item in enumerate((v for v in verified if not v.kept), start=len(kept)):
             drafts.append(
                 SentenceDraft(
@@ -521,7 +567,7 @@ class QueryService:
                     text=item.sentence.text,
                     support=item.verdict,
                     removed=True,
-                    citations=[],
+                    citations=citation_drafts(item.sentence, by_id),
                 )
             )
 

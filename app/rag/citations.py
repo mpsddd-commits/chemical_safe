@@ -137,13 +137,33 @@ def display_label(section_code: str | None, section_title: str | None) -> str:
 
 
 def citations_for_answer(session: Session, query_id: int) -> list[dict]:
-    """BR-92a - snapshot only. `chunk` is deliberately not joined."""
+    """BR-92a - snapshot only. `chunk` is deliberately not joined.
+
+    Filtered sentences are here too, and each citation says so (C14). Since
+    2026-09-08 a `removed` sentence is stored with the evidence it was judged
+    against, so this list stopped being "the answer's sources" and became
+    "every citation the query made". Both readings are useful and neither is
+    wrong on its own - the harm is a caller that cannot tell which it holds.
+
+    Marking rather than filtering, deliberately. Dropping the filtered rows
+    would restore the older reading at the cost of the newer one, and the
+    newer one is the audit trail C11 and C14 exist to build: BR-88 says a
+    count with no rows behind it cannot be audited, and hiding the rows again
+    one layer up is the same failure wearing a different hat. The sibling
+    `sentences` array already exposes `removed` on the same response, so a
+    consumer *could* join on `sentence_ordinal` and work it out - but a
+    consumer that renders `citations` straight through would show the sources
+    of a sentence the reader never saw, as if they backed the answer. In a
+    safety domain that is not a mistake to leave available. So the fact
+    travels with the row that would be misread, and the caller has to choose.
+    """
     rows = session.execute(
         select(
             AnswerSentenceRow.ordinal,
             AnswerCitationRow.id,
             AnswerCitationRow.rank,
             AnswerCitationRow.chunk_id,
+            AnswerSentenceRow.removed,
             CitationSnapshotRow,
         )
         .join(AnswerCitationRow, AnswerCitationRow.sentence_id == AnswerSentenceRow.id)
@@ -169,6 +189,9 @@ def citations_for_answer(session: Session, query_id: int) -> list[dict]:
             "snippet": snap.snippet,
             "source_url": snap.source_url,
             "stale": chunk_id is None,
+            # The sentence this cites was filtered out of the answer. Not a
+            # reason to omit the citation - a reason not to render it as one.
+            "removed": removed,
         }
-        for ordinal, citation_id, rank, chunk_id, snap in rows
+        for ordinal, citation_id, rank, chunk_id, removed, snap in rows
     ]

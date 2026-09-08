@@ -133,10 +133,26 @@ class AccountService:
 
         entries: list[HistoryEntry] = []
         for row in self._users.query_history(user.id, limit):
+            # `removed = false` on both counts, and that split is the whole
+            # point of this block. The tables are the **audit trail**: they
+            # hold every sentence verification filtered out (C11) and, since
+            # C14, the citations those sentences made. This screen is the
+            # **user's** record, and it reads "{n}문장 · 근거 {m}건" about an
+            # answer they were given - so it must count only what they were
+            # given. Counting the audit rows makes that line state something
+            # untrue.
+            #
+            # It was already untrue before C14 on the partial-answer path, and
+            # it is the reason this is being fixed now rather than later: C11
+            # started storing filtered sentences on 2026-09-08, so an
+            # `answered_partial` query has read "3문장" while the user read
+            # two. C14 adds the citations behind those sentences, which would
+            # have inflated "근거 N건" the same way.
             sentences = self._s.scalar(
                 select(func.count())
                 .select_from(AnswerSentenceRow)
                 .where(AnswerSentenceRow.query_id == row.id)
+                .where(AnswerSentenceRow.removed.is_(False))
             ) or 0
             citations = self._s.scalar(
                 select(func.count())
@@ -146,6 +162,7 @@ class AccountService:
                     AnswerSentenceRow.id == AnswerCitationRow.sentence_id,
                 )
                 .where(AnswerSentenceRow.query_id == row.id)
+                .where(AnswerSentenceRow.removed.is_(False))
             ) or 0
             entries.append(
                 HistoryEntry(
