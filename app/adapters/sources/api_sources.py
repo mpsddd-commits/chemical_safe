@@ -18,6 +18,7 @@ from typing import Any
 
 from app.adapters.sources.http import HttpSourceClient, resolve_api_key
 from app.core.config import Settings
+from app.core.document_titles import incident_title, law_title, substance_title
 from app.core.errors import (
     ApiKeyMissingError,
     SchemaMismatchError,
@@ -234,6 +235,21 @@ class ConfiguredApiAdapter:
             inverse.setdefault(str(physical), str(logical))
         return {inverse.get(str(key), str(key)): value for key, value in row.items()}
 
+    def _title_for(self, row: dict[str, Any]) -> str | None:
+        """The human name of the document this listing row will become.
+
+        `indexing_service` reads it as `ref.extra["title"]` and stores it as
+        `document.title`, which `assembler.for_answer` hands to the generator as
+        the `title=` attribute of the evidence block. It is the only thing in the
+        prompt that says *whose* evidence a chunk is: the bodies themselves often
+        do not name their subject (see `app.core.document_titles`). Returning None
+        here is what left 70 of 97 documents anonymous.
+
+        None stays the base answer because a source that cannot name its records
+        should say so rather than invent a name.
+        """
+        return None
+
     def _url_for(self, external_id: str) -> str:
         template = self._spec.get("url_template")
         if template:
@@ -286,6 +302,10 @@ class ConfiguredApiAdapter:
                 published = _parse_date(self._field(row, "published_at"))
                 if since and published and published < since:
                     continue
+                extra: dict[str, Any] = {"row": row}
+                title = self._title_for(row)
+                if title:
+                    extra["title"] = title
                 yield SourceRef(
                     source_id=self.source_id(),
                     external_id=str(external_id),
@@ -293,7 +313,7 @@ class ConfiguredApiAdapter:
                     published_at=published,
                     revised_at=_parse_date(self._field(row, "revised_at")),
                     content_hash=_hash_payload(row),
-                    extra={"row": row},
+                    extra=extra,
                 )
                 seen += 1
                 if seen >= limit:
@@ -336,6 +356,19 @@ class SubstanceApiAdapter(ConfiguredApiAdapter):
     def __init__(self, settings: Settings, spec: dict[str, Any]) -> None:
         super().__init__(settings, spec)
         self.priority_terms: tuple[str, ...] = ()
+
+    def _title_for(self, row: dict[str, Any]) -> str | None:
+        """`암모니아 (Ammonia) · CAS 7664-41-7`.
+
+        This source is the one the anonymity hurts most: its chunks are bare
+        symptom lines (`eyeball: ·눈에 소량은 영구적은 손상을...`) that never
+        name the substance they describe.
+        """
+        return substance_title(
+            self._field(row, "name_ko"),
+            self._field(row, "name_en"),
+            self._field(row, "cas_number"),
+        )
 
     def list_targets(self, since: datetime | None) -> Iterator[SourceRef]:
         target = self._settings.initial_substance_target
@@ -406,8 +439,28 @@ class LawApiAdapter(ConfiguredApiAdapter):
                     published_at=_parse_date(self._field(row, "published_at")),
                     revised_at=_parse_date(self._field(row, "revised_at")),
                     content_hash=_hash_payload(row),
-                    extra={"row": row, "law_name": law_name},
+                    extra=self._law_extra(row, law_name),
                 )
+
+    def _law_extra(self, row: dict[str, Any], law_name: str) -> dict[str, Any]:
+        """`law_name` is the query; `title` is the statute's own name.
+
+        One `targets` entry returns the Act, its Enforcement Decree and its
+        Enforcement Rule, and `law_name` is the same 화학물질관리법 for all three
+        because that is what was searched for. Titling documents by it would make
+        the three indistinguishable in the prompt, which is the failure this
+        exists to fix, so the title comes from the row instead.
+
+        `lawSearch.do` spells the field `법령명한글` (mapped as `title` in
+        `sources.yaml`); the `lawService.do` detail body spells the same fact
+        `법령명_한글`. Both are read, because a `field_map` correction should not
+        be the difference between a named and an anonymous statute.
+        """
+        extra: dict[str, Any] = {"row": row, "law_name": law_name}
+        title = law_title(self._field(row, "title") or row.get("법령명_한글"))
+        if title:
+            extra["title"] = title
+        return extra
 
 
 class IncidentDataAdapter(ConfiguredApiAdapter):
@@ -419,6 +472,19 @@ class IncidentDataAdapter(ConfiguredApiAdapter):
     The list operation returns the complete record, so `fetch` never issues a
     second request - `sources.yaml` deliberately declares no `detail_path`.
     """
+
+    def _title_for(self, row: dict[str, Any]) -> str | None:
+        """`광운대학교 폭발 (2025-12-26)` — the place, what happened, and when.
+
+        Without it every accident reaches the generator as an untitled summary,
+        and there is no way to tell the 군산 ammonia explosion from the 서산 one.
+        """
+        return incident_title(
+            self._field(row, "place"),
+            self._field(row, "incident_type"),
+            self._field(row, "occurred_at"),
+            area=self._field(row, "area"),
+        )
 
     def fetch(self, ref: SourceRef) -> RawDocument:
         row = ref.extra.get("row") or {}
