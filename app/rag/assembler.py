@@ -91,13 +91,35 @@ class PromptAssembler:
         No question, no sibling sentences, no other evidence. A verifier with
         less context has less to be steered about, and "is this sentence in this
         text" leaves almost no discretion to hijack.
+
+        `title` is not an exception to that. SP-6 keeps out the context the
+        *user* controls - the question and the neighbouring sentences - because
+        that is what a hijack steers with. A chunk's own document title is not
+        user context, it is which document this evidence is: substance-record
+        chunks carry no substance name in their body, so without the title the
+        verifier reads an anonymous "·눈에 소량은 영구적은 손상을 일으킬 것임" and
+        cannot tell that the sentence naming 암모니아 is talking about it. It then
+        has to say unsupported, which is what query 492 did to three correct
+        sentences. Same value, same escaping as `for_answer`, so no new exposure
+        surface: a user-uploaded document's title already reaches the generator
+        by this route.
+
+        `section` is deliberately left out. A section code (`substance_eye`,
+        `msds_08`) is not the identity of the evidence, it is a claim *about* its
+        topic, and the verifier's whole job is to check claims against the body
+        text only. Told the section is the eye one, it could count that as
+        support for a sentence about eyes that the body never states - the
+        partial-support rule the prompt is built on. The title resolves who; the
+        body must stay the only source of what.
         """
         prompt: Prompt = self._repo.get("verify")
         nonce = self._nonce()
         ev_tag, s_tag = f"evidence-{nonce}", f"sentence-{nonce}"
 
         blocks = [
-            f"<{ev_tag} id=\"{item.chunk_id}\">\n{escape_for_prompt(item.text)}\n</{ev_tag}>"
+            f'<{ev_tag} id="{item.chunk_id}" '
+            f'title="{escape_attr(item.document_title or "")}">\n'
+            f"{escape_for_prompt(item.text)}\n</{ev_tag}>"
             for item in evidence
         ]
         user = "\n\n".join(
