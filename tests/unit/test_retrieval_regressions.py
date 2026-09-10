@@ -439,6 +439,79 @@ class TestRefusalTextsAgree:
             assert reason.value in in_js, f"query.js 에 {reason.value} 문구 없음"
 
 
+class TestUnknownSubjectRefusalText:
+    """Backlog D10. `UNKNOWN_SUBJECT` covers two situations the code cannot
+    tell apart - the question named no substance, or it named one the corpus
+    does not hold - so the text may only say what is true in both. The old
+    wording did neither: it asserted we could not tell which substance was
+    asked about (false when the user wrote 카드뮴 plainly) and promised an
+    answer if they named it (false, because naming it changes nothing when the
+    material is absent). Both send the user to rewrite a question instead of
+    reading an MSDS."""
+
+    @staticmethod
+    def _texts():
+        import re
+        from pathlib import Path
+
+        root = Path(__file__).resolve().parents[2]
+        # Text, not imports - same reason as TestRefusalTextsAgree above.
+        py = (root / "app" / "web" / "routers" / "pages.py").read_text(encoding="utf-8")
+        js = (root / "app" / "web" / "static" / "query.js").read_text(encoding="utf-8")
+
+        py_entry = py.split('"unknown_subject": (', 1)[1].split("),", 1)[0]
+        js_entry = js.split("\n    unknown_subject:", 1)[1].split("\n  };", 1)[0]
+        # Both renderers write the sentence as adjacent string literals, so the
+        # literals joined in order are the sentence the user reads.
+        return (
+            "".join(re.findall(r'"([^"]*)"', py_entry)),
+            "".join(re.findall(r'"([^"]*)"', js_entry)),
+        )
+
+    def test_the_two_renderers_show_the_same_sentence(self):
+        """SSR and streaming render the same refusal. Agreeing on the key is
+        not enough - a divergent sentence shows a different refusal depending
+        on which path served the request."""
+        py_text, js_text = self._texts()
+        assert py_text == js_text
+
+    def test_it_makes_no_claim_about_what_the_user_asked(self):
+        """The system is not in a position to judge what the user wrote: an
+        unresolved name never reaches `substance_names`, so a question naming
+        카드뮴 is indistinguishable from one naming nothing."""
+        for name, text in zip(("pages.py", "query.js"), self._texts(), strict=True):
+            for claim in ("확인하지 못했", "파악하지 못했", "질문인지", "알아듣"):
+                assert claim not in text, f"{name} 가 사용자 질문을 단정함: {claim}"
+
+    def test_it_promises_no_answer_it_cannot_give(self):
+        """Naming the substance does not produce an answer when the corpus has
+        no material for it - 카드뮴 with CAS 7440-43-9 returns this same
+        refusal."""
+        for name, text in zip(("pages.py", "query.js"), self._texts(), strict=True):
+            for promise in ("주시면", "하시면 답", "답변합니다", "답변해 드립"):
+                assert promise not in text, f"{name} 가 지킬 수 없는 약속을 함: {promise}"
+
+    def test_it_makes_no_claim_about_what_the_corpus_holds(self):
+        """The reason fires when a name fails to RESOLVE, which is not the same
+        as the material being absent. Measured 2026-09-10 with
+        `EntityExtractor.extract`, entity LLM off: H2SO4 저장법 and 유산은
+        어떻게 저장하나요 both yield names=[] and land here, while 황산 is held
+        - two MSDS documents plus a substance record. So a sentence saying the
+        corpus does not have it is false for every question that names a held
+        substance by an unlisted synonym, and synonyms average two per
+        substance. The text may say it did not find, never that we do not
+        have."""
+        for name, text in zip(("pages.py", "query.js"), self._texts(), strict=True):
+            for claim in ("없습니다", "보유", "가지고 있지", "갖고 있지", "미보유"):
+                assert claim not in text, f"{name} 가 보유 여부를 단정함: {claim}"
+
+    def test_it_points_at_the_substance_list(self):
+        """The useful next action is checking what the corpus holds, which the
+        substance list answers exactly. Rewriting the question does not."""
+        for name, text in zip(("pages.py", "query.js"), self._texts(), strict=True):
+            assert "물질" in text and "목록" in text, f"{name} 가 물질 목록을 가리키지 않음"
+
+
 class TestRefusalHeadlinesAgree:
     """The refusal headline is the first thing read, so it must not contradict
     the reason printed under it. Fixed headline text told every refusal it was

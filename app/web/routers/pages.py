@@ -48,13 +48,55 @@ REFUSAL_TEXT = {
         "잠시 후 다시 시도해 주시면 답변을 드릴 수 있습니다."
     ),
     "provider_refusal": "모델이 이 질문에 대한 답변을 거부했습니다.",
-    # BR-73a. Worded as a request, not a dead end: the evidence found is about
-    # specific substances and we could not tell which one was asked about, so
-    # naming it is the one thing that turns this into an answer.
+    # BR-73a / backlog D10. The old wording said two things the system is not
+    # entitled to say. "어떤 물질에 대한 질문인지 확인하지 못했습니다" is a claim
+    # about the user's text, and it is false whenever they did name one:
+    # 카드뮴 is written plainly in the question and still lands here, because
+    # `entities._match_synonyms` only puts RESOLVED names into `substance_names`
+    # and an unresolved 카드뮴 stays in `raw_terms` - the exact shape of a
+    # question that named nothing. And "적어 주시면 답변합니다" is a promise this
+    # code cannot keep: adding CAS 7440-43-9 to that same question returns this
+    # refusal again, because the corpus holds no 카드뮴 material.
+    #
+    # UNKNOWN_SUBJECT covers THREE situations the code cannot tell apart:
+    # (1) the question names no substance, (2) it names one we do not hold,
+    # (3) it names one we DO hold, under a name the synonym table lacks. The
+    # reason fires on failure to RESOLVE a name, and failure to resolve is not
+    # absence. Measured 2026-09-10, `EntityExtractor.extract` called directly,
+    # entity LLM off:
+    #
+    #     황산은 어떻게 저장하나요    -> names=['황산']            resolved
+    #     sulfuric acid 저장법        -> names=['Sulfuric acid']   resolved
+    #     H2SO4 저장법                -> names=[]                  UNRESOLVED
+    #     유산은 어떻게 저장하나요    -> names=[]                  UNRESOLVED
+    #
+    # 황산 is held - two MSDS documents plus a substance record - and asking by
+    # formula, or by its old name 유산, still lands here. So the first D10
+    # wording, "이 질문에 답할 자료는 현재 보유한 자료에 없습니다" (replaced
+    # 2026-09-10), was false in exactly those cases: it swapped an overclaim
+    # about the user's question for an overclaim about the corpus. Synonyms
+    # average two per substance, so case (3) is not a corner case. Do not put
+    # "없습니다" back. What the system knows is that it did not FIND material
+    # for this question, never that it does not HAVE it - and every sentence
+    # here has to be true in all three situations. (Widening the synonym table
+    # is a separate backlog item; it would shrink case (3), not make the
+    # stronger claim safe.) The next action is the substance list, which is a
+    # fact about the corpus rather than a rewrite of the question, and which
+    # now also answers "under which name do they file it". The count is
+    # deliberately not repeated here - `/substances` owns it.
+    #
+    # Sentence order is deliberate and unchanged. The headline above already
+    # says 근거를 찾지 못했습니다, so leading the reason with the same news adds
+    # nothing; what it must add first is the warning about the documents
+    # rendered directly below it, because a reader who takes another
+    # substance's MSDS for the answer is the one failure here that carries
+    # real safety cost. Not-found follows as the reason, the list last as the
+    # next action.
     "unknown_subject": (
-        "어떤 물질에 대한 질문인지 확인하지 못했습니다. "
-        "물질명이나 CAS 번호를 함께 적어 주시면 해당 물질의 자료로 답변합니다. "
-        "아래는 검색된 문서입니다."
+        "아래 문서는 특정 물질의 자료이며 이 질문에 대한 답이 아닙니다. "
+        "이 질문에 맞는 자료를 찾지 못했으며, 같은 물질이라도 이름이나 표기가 "
+        "자료와 다르면 찾지 못할 수 있습니다. "
+        "어떤 물질을 다루고 있는지는 '물질' 메뉴의 목록에서 확인하실 수 있습니다."
     ),
 }
 
@@ -68,8 +110,9 @@ REFUSAL_TEXT = {
 # retry away. So the headline is chosen by reason, like the reason text is.
 #
 # (Backlog D10 - naming 카드뮴 and being told we could not tell which substance
-# was asked about - is this same failure from a different cause: UNKNOWN_SUBJECT
-# covers two situations. Tracked separately; not fixed here.)
+# was asked about - was this same failure from a different cause. It was fixed
+# in the reason text above, not here: for `unknown_subject` the default headline
+# is accurate, because that substance's evidence really was not found.)
 DEFAULT_REFUSAL_HEADLINE = "ⓘ 이 질문에 답할 근거를 찾지 못했습니다."
 
 # Overrides only. A reason that is absent keeps the default, which is the right

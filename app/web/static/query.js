@@ -43,10 +43,26 @@
     // BR-73a. Must stay in step with REFUSAL_TEXT in web/routers/pages.py:
     // the SSR and the streaming path render the same refusal from two maps,
     // and a reason present in one but not the other silently degrades to the
-    // generic fallback. A unit test pins the two together.
+    // generic fallback. A unit test pins the two together, text included.
+    //
+    // Backlog D10 - the old wording claimed we could not tell which substance
+    // was asked about (false whenever the user named one) and promised an
+    // answer if they named it (impossible when the corpus holds no such
+    // material). The reason cannot describe the user's question at all.
+    //
+    // Its first replacement said 보유한 자료에 없습니다 and was false too: the
+    // reason fires when a NAME fails to resolve, and 2026-09-10 measurement
+    // (`EntityExtractor.extract`, entity LLM off) has H2SO4 and 유산 both
+    // resolving to names=[] while 황산 itself is held, two MSDS documents plus
+    // a substance record. So the text may claim neither what the user asked
+    // nor what the corpus holds - only that it did not find material for this
+    // question. Do not put "없습니다" back. See pages.py for the full
+    // reasoning, the measurement, and why the sentences sit in this order.
     unknown_subject:
-      "어떤 물질에 대한 질문인지 확인하지 못했습니다. 물질명이나 CAS 번호를 함께 " +
-      "적어 주시면 해당 물질의 자료로 답변합니다. 아래는 검색된 문서입니다."
+      "아래 문서는 특정 물질의 자료이며 이 질문에 대한 답이 아닙니다. 이 질문에 맞는 " +
+      "자료를 찾지 못했으며, 같은 물질이라도 이름이나 표기가 자료와 다르면 찾지 못할 " +
+      "수 있습니다. 어떤 물질을 다루고 있는지는 '물질' 메뉴의 목록에서 확인하실 수 " +
+      "있습니다."
   };
 
   // The headline the user reads first. It cannot be fixed text: a refusal that
