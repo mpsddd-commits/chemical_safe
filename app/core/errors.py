@@ -88,6 +88,19 @@ class ApiKeyMissingError(PermanentError):
     """BR-02 — source requires an API key that is not configured."""
 
 
+class OriginalsNotWritableError(PermanentError):
+    """D9 — the originals root cannot be written, so no original would be kept.
+
+    `PERMANENT`, not `TRANSIENT`: a read-only mount does not become writable by
+    waiting, and retrying would repeat the same run with the same loss. The
+    underlying `OSError` would classify as transient (`classify`), which is
+    exactly why this is raised as its own type. Not `POLICY_BLOCKED` either:
+    that kind is about a source's access terms and gates later runs until the
+    policy check flips, while this is a deployment setting the operator fixes
+    by running the job where the mount is writable.
+    """
+
+
 # ---- Policy blocked (never retried, never bypassed, BR-43/BR-04) ----
 class PolicyBlockedError(SafeenvError):
     kind = FailureKind.POLICY_BLOCKED

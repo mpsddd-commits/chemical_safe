@@ -77,6 +77,10 @@ def cmd_ingest(args: argparse.Namespace) -> int:
         outcome = IngestionService(session).execute(
             result.job_id, args.source, since.isoformat() if since else None
         )
+    if outcome.get("refused"):
+        # D9 - a refusal is not a run with zero successes; say what to fix.
+        print(f"거부됨 (job {result.job_id}): {outcome.get('error')}", file=sys.stderr)
+        return 2
     print(
         f"job {result.job_id} {outcome.get('status')} — "
         f"성공 {outcome.get('succeeded', 0)} / "

@@ -19,7 +19,12 @@ from sqlalchemy.orm import Session
 from app.adapters.sources import build_adapter, load_source_specs
 from app.adapters.sources.api_sources import SubstanceApiAdapter
 from app.core.config import Settings, get_settings
-from app.core.errors import ApiKeyMissingError, ConfigurationError, PolicyBlockedError
+from app.core.errors import (
+    ApiKeyMissingError,
+    ConfigurationError,
+    OriginalsNotWritableError,
+    PolicyBlockedError,
+)
 from app.core.logging import get_logger
 from app.core.types import DocType, JobKind, JobProgress, JobStatus, PolicyDecision, SourceRef
 from app.db.engine import session_scope
@@ -29,8 +34,8 @@ from app.db.repositories.jobs import JobRepo
 from app.ingestion import substance_selection
 from app.ingestion.change_detector import ChangeDetector
 from app.ingestion.orchestrator import IngestionOrchestrator
+from app.ingestion.originals import ensure_originals_writable
 from app.ingestion.policy import AccessPolicyChecker
-from app.jobs.queue import TaskQueue
 from app.jobs.tracker import JobTracker
 from app.services.indexing_service import IndexingService
 
@@ -127,6 +132,10 @@ class IngestionService:
         return StartResult(job_id, True)
 
     async def enqueue(self, job_id: int, source_id: str, since: datetime | None) -> None:
+        # Imported here: `arq` is a worker-side dependency, and importing it at
+        # module level kept the host test run from loading this service at all.
+        from app.jobs.queue import TaskQueue
+
         queue = TaskQueue(self._settings)
         try:
             await queue.enqueue(
@@ -146,6 +155,25 @@ class IngestionService:
 
     # ---- W1 execute (worker part) ----
     def execute(self, job_id: int, source_id: str, since: str | None = None) -> dict:
+        # D9 - before anything is fetched. Every ingestion path reaches here:
+        # the CLI calls it inline, and the admin button and the API enqueue
+        # `run_ingest`, which calls it in the worker. The check is not in
+        # `start` on purpose: the web app starts jobs from a container whose
+        # originals mount is read-only, and that is correct as long as the
+        # worker does the collecting.
+        try:
+            ensure_originals_writable(self._settings.originals_dir)
+        except OriginalsNotWritableError as exc:
+            log.error(
+                "ingest_refused_originals_not_writable",
+                extra={"job_id": job_id, "source_id": source_id, "error": str(exc)},
+            )
+            self._tracker.mark_failed(
+                job_id, f"{source_id}:__originals__", exc.kind, str(exc)
+            )
+            status = self._tracker.finalize(job_id)
+            return {"status": status.value, "error": str(exc), "refused": True}
+
         spec = next(
             (s for s in load_source_specs() if s["source_id"] == source_id), None
         )
