@@ -157,13 +157,23 @@ class DocumentRepo:
         about"; `chunk.meta.substance_ids` is a copy stamped from what this
         returns, never from anything computed alongside it (D12).
         """
-        return list(
-            self._s.scalars(
-                select(DocumentSubstance.substance_id)
+        return [sid for sid, _relation in self.substance_links(document_id)]
+
+    def substance_links(self, document_id: int) -> list[tuple[int, SubstanceRelation]]:
+        """The same rows as `linked_substance_ids`, with their relation (BR-36).
+
+        Re-indexing reads this once and uses it twice: the ids stamp the chunks
+        and the subjects decide which substance an MSDS's names belong to
+        (D14). One read, so the two cannot be taken from different lists.
+        """
+        return [
+            (sid, SubstanceRelation(relation))
+            for sid, relation in self._s.execute(
+                select(DocumentSubstance.substance_id, DocumentSubstance.relation)
                 .where(DocumentSubstance.document_id == document_id)
                 .order_by(DocumentSubstance.substance_id)
-            )
-        )
+            ).all()
+        ]
 
     def substance_mentions(self, exclude_source_pk: int | None = None) -> list[str]:
         """BR-08 - the substance names the corpus already talks about.

@@ -98,3 +98,24 @@ def test_repository_reads_the_same_links_the_invariant_compares():
         actual = {doc: repo.linked_substance_ids(doc) for doc in expected}
     assert expected, "no document_substance rows - the corpus is not indexed"
     assert actual == expected
+
+
+def test_substance_links_carry_the_tables_relations():
+    """D14 - the synonym step reads relations through this; it must be the table."""
+    with session_scope() as session:
+        expected: dict[int, list[tuple[int, str]]] = {}
+        for doc, sid, relation in session.execute(
+            text(
+                "SELECT document_id, substance_id, relation FROM document_substance "
+                "ORDER BY document_id, substance_id"
+            )
+        ).all():
+            expected.setdefault(doc, []).append((sid, relation))
+        repo = DocumentRepo(session)
+        actual = {
+            doc: [(sid, rel.value) for sid, rel in repo.substance_links(doc)] for doc in expected
+        }
+        ids = {doc: repo.linked_substance_ids(doc) for doc in expected}
+    assert expected, "no document_substance rows - the corpus is not indexed"
+    assert actual == expected
+    assert ids == {doc: [sid for sid, _r in links] for doc, links in expected.items()}

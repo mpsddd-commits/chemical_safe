@@ -200,7 +200,9 @@ class IndexingService:
         self._project_substance(raw)
 
         links = self._resolve_substances(raw, doc_type, ctx.extracted.text, document.title)
-        kept_substance_ids = self._settle_substance_links(document, doc_type, links, ctx.chunks)
+        linked, kept_substance_ids = self._settle_substance_links(
+            document, doc_type, links, ctx.chunks
+        )
 
         # BR-54 - full replace keeps re-processing idempotent.
         chunk_rows = self._chunks.replace_for_document(
@@ -211,7 +213,11 @@ class IndexingService:
         # subject, owned by this document. In the indexing path for the reason
         # BR-97 gives: a separate command (D11's script) is not run by a
         # re-index from the originals, and the names would silently go.
-        self._register_msds_synonyms(document, doc_type, links, ctx, owner_id)
+        # D14 - "the substance this document is linked to" is `document_substance`
+        # as settled above, the same list the chunks were stamped from. Passing
+        # the resolution instead cleared the rows whenever it came back empty,
+        # which is D12's defect turned into lost synonyms.
+        self._register_msds_synonyms(document, doc_type, linked, ctx, owner_id)
 
         embedded = False
         if chunk_rows:
@@ -358,6 +364,15 @@ class IndexingService:
     ) -> None:
         """Write the names this document prints, or clear the ones it used to own.
 
+        `links` is what `document_substance` holds after
+        `_settle_substance_links`, not this run's resolution (D14). Revised BR-97
+        says "the substance the document is linked to", and BR-36 makes that
+        table the source. An empty resolution keeps the links, so it keeps the
+        names too; the kept links are already reported (warning log,
+        `IndexOutcome.substance_links_kept`, re-index job summary), and that
+        report covers the names that followed them. Which names are taken is
+        unchanged - only where the subject comes from.
+
         Only a public MSDS about exactly one substance writes names: a mixture
         datasheet is the datasheet of none of its constituents, and
         `substance_synonym` is public, so an owner-scoped document must not
@@ -400,7 +415,7 @@ class IndexingService:
         doc_type: DocType,
         links: list[tuple[int, SubstanceRelation]],
         chunks,
-    ) -> list[int]:
+    ) -> tuple[list[tuple[int, SubstanceRelation]], list[int]]:
         """Write the links, then stamp the chunks from the table - not from `links`.
 
         "Which substances is this document about" is one fact written in two
@@ -427,25 +442,31 @@ class IndexingService:
 
         A resolution that finds anything replaces the links as before (BR-37).
 
-        Returns the substance ids kept despite an empty resolution.
+        Returns the links the table holds afterwards - the one list both the
+        chunks and the MSDS synonyms (D14) follow - and the substance ids kept
+        despite an empty resolution.
         """
         if links:
             self._documents.link_substances(document, links)
-        substance_ids = self._documents.linked_substance_ids(document.id)
+        linked = self._documents.substance_links(document.id)
+        substance_ids = [sid for sid, _relation in linked]
         for chunk in chunks:
             chunk.meta.substance_ids = list(substance_ids)
         if links or not substance_ids:
-            return []
+            return linked, []
         log.warning(
             "substance_links_kept_unresolved",
             extra={
                 "document_id": document.id,
                 "doc_type": doc_type.value,
                 "kept_substance_ids": substance_ids,
-                "impact": "links kept; resolution found none - check the document or its CAS",
+                "impact": (
+                    "links kept, and MSDS synonyms follow them; resolution found none"
+                    " - check the document or its CAS"
+                ),
             },
         )
-        return substance_ids
+        return linked, substance_ids
 
     def _resolve_substances(
         self, raw, doc_type: DocType, text: str, title: str | None

@@ -63,9 +63,12 @@ class _Documents:
         for sid, relation in links:
             self.linked.setdefault(sid, relation.value)
 
-    def linked_substance_ids(self, document_id: int) -> list[int]:
+    def substance_links(self, document_id: int) -> list[tuple[int, SubstanceRelation]]:
         assert document_id == DOC_ID
-        return sorted(self.linked)
+        return [(sid, SubstanceRelation(self.linked[sid])) for sid in sorted(self.linked)]
+
+    def linked_substance_ids(self, document_id: int) -> list[int]:
+        return [sid for sid, _relation in self.substance_links(document_id)]
 
 
 class _Chunks:
