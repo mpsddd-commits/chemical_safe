@@ -20,11 +20,19 @@ would keep showing stale safety information after the source was revised.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.types import CardItemKey, DocType, ExposureRoute, SubstanceRelation, ValueOrigin
-from app.db.models import ChunkRow, Document, DocumentSection, DocumentSubstance
+from app.db.models import (
+    ChunkRow,
+    Document,
+    DocumentSection,
+    DocumentSubstance,
+    ExtractedTextRow,
+)
 from app.substances.types import CardItem, ItemValue, SubstanceCard, SubstanceRef
 
 # Which MSDS section backs which card item (FR-24).
@@ -68,7 +76,17 @@ class SubstanceCardBuilder:
         """Every chunk of every document linked to this substance (BR-37).
 
         Public corpus only (`owner_id IS NULL`) - u5 widens this.
+
+        A document BR-31a folded into one section-less chunk is read from its
+        sections instead (see `_folded_section_rows`).
         """
+        rows = self._chunk_rows(substance_id)
+        candidates = _folded_candidates(rows)
+        if not candidates:
+            return rows
+        return _unfold(rows, self._folded_section_rows(substance_id, candidates))
+
+    def _chunk_rows(self, substance_id: int) -> list:
         return self._s.execute(
             select(
                 ChunkRow.text,
@@ -79,6 +97,7 @@ class SubstanceCardBuilder:
                 DocumentSection.section_code,
                 DocumentSection.section_title,
                 DocumentSubstance.relation,
+                ChunkRow.section_id,
             )
             .join(Document, Document.id == ChunkRow.document_id)
             .join(DocumentSubstance, DocumentSubstance.document_id == Document.id)
@@ -89,6 +108,52 @@ class SubstanceCardBuilder:
             )
             .order_by(Document.id, ChunkRow.ordinal)
         ).all()
+
+    def _folded_section_rows(self, substance_id: int, document_ids: set[int]) -> list:
+        """Card rows cut from `extracted_text` along `document_section` (C3).
+
+        BR-31a folds a document whose sections are too short to cite into one
+        chunk with no section, and BR-104 finds card items by section code, so
+        the whole document fell off its card (4-tert-뷰틸벤조산, document 69).
+
+        The fix is on the reading side on purpose. Narrowing BR-31a or tagging
+        the folded chunk changes chunking, which means a re-index, which changes
+        the corpus and invalidates the 615 evaluation baseline - for 1 card in
+        49. And nothing was lost: the section boundaries are still in
+        `document_section`, and the text they index is still in
+        `extracted_text`. Only the chunk was folded.
+
+        The offsets are safe to apply to the stored text. NormalizeStage runs
+        before StructureStage, the sections are found on the normalised text,
+        and that same text is what `set_extracted_text` stores (FQ-5=A, BR-30);
+        the two-column retry replaces text and sections together.
+
+        Same scope as the chunk query: the substance link and the public corpus.
+        """
+        found = self._s.execute(
+            select(
+                ExtractedTextRow.text.label("full_text"),
+                DocumentSection.start_offset,
+                DocumentSection.end_offset,
+                Document.id,
+                Document.title,
+                Document.source_url,
+                Document.doc_type,
+                DocumentSection.section_code,
+                DocumentSection.section_title,
+                DocumentSubstance.relation,
+            )
+            .join(Document, Document.id == DocumentSection.document_id)
+            .join(ExtractedTextRow, ExtractedTextRow.document_id == Document.id)
+            .join(DocumentSubstance, DocumentSubstance.document_id == Document.id)
+            .where(
+                DocumentSection.document_id.in_(document_ids),
+                DocumentSubstance.substance_id == substance_id,
+                Document.owner_id.is_(None),
+            )
+            .order_by(Document.id, DocumentSection.ordinal)
+        ).all()
+        return _slice_sections(found)
 
     @staticmethod
     def _has_msds(rows) -> bool:
@@ -131,6 +196,76 @@ class SubstanceCardBuilder:
             ]
 
         return values
+
+
+@dataclass(frozen=True)
+class _SectionRow:
+    """A folded document's section, shaped like a chunk row so `_value` and
+    everything after it cannot tell the two apart."""
+
+    text: str
+    id: int
+    title: str | None
+    source_url: str
+    doc_type: str
+    section_code: str | None
+    section_title: str | None
+    relation: str
+    section_id: int | None = None
+
+
+def _folded_candidates(rows) -> set[int]:
+    """Documents none of whose chunks carries a section.
+
+    A document with even one sectioned chunk was not folded, and reading its
+    sections again would put every value on the card twice. Whether a
+    candidate has sections at all is decided by the section query: an
+    unstructured document has none and keeps its chunks.
+    """
+    sectioned = {row.id for row in rows if row.section_id is not None}
+    return {row.id for row in rows} - sectioned
+
+
+def _slice_sections(found) -> list[_SectionRow]:
+    rows = []
+    for row in found:
+        # BR-104 - the source text as sliced; only surrounding whitespace goes.
+        text = row.full_text[row.start_offset : row.end_offset].strip()
+        if not text:
+            continue
+        rows.append(
+            _SectionRow(
+                text=text,
+                id=row.id,
+                title=row.title,
+                source_url=row.source_url,
+                doc_type=row.doc_type,
+                section_code=row.section_code,
+                section_title=row.section_title,
+                relation=row.relation,
+            )
+        )
+    return rows
+
+
+def _unfold(chunk_rows, section_rows) -> list:
+    """Chunk rows, with each folded document's chunks replaced by its sections.
+
+    Replaced rather than added to: the folded chunk is the same text again.
+    Document order is kept.
+    """
+    by_document: dict[int, list] = {}
+    for row in section_rows:
+        by_document.setdefault(row.id, []).append(row)
+    out: list = []
+    unfolded: set[int] = set()
+    for row in chunk_rows:
+        if row.id not in by_document:
+            out.append(row)
+        elif row.id not in unfolded:
+            unfolded.add(row.id)
+            out.extend(by_document[row.id])
+    return out
 
 
 def _value(row, origin: ValueOrigin, route: ExposureRoute | None = None) -> ItemValue:
