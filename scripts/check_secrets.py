@@ -1,4 +1,7 @@
-"""추적 대상 파일에 `.env` 의 실제 비밀값이 들어갔는지 검사한다.
+"""커밋될 파일에 `.env` 의 실제 비밀값이 들어갔는지 검사한다.
+
+검사 대상은 추적 파일 + 추적되지 않았지만 `.gitignore` 에 걸리지 않는 파일,
+즉 `git add -A` 가 올릴 파일 전부다. 출력은 둘을 나눠 센다.
 
 푸시 전 마지막 관문이다. 종료코드 0 이면 깨끗, 그 외는 푸시하지 말 것.
 
@@ -50,16 +53,41 @@ def load_secrets(env_path: Path) -> dict[str, str]:
     return found
 
 
-def tracked_files(root: Path) -> list[Path]:
+def _git_paths(root: Path, *args: str) -> list[Path]:
     out = subprocess.run(
-        ["git", "ls-files", "-z"], cwd=root, capture_output=True, text=True, check=True
+        ["git", "ls-files", "-z", *args],
+        cwd=root,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=True,
     ).stdout
     return [root / name for name in out.split("\0") if name]
 
 
-def main() -> int:
-    quiet = "--quiet" in sys.argv
-    root = Path(__file__).resolve().parent.parent
+def tracked_files(root: Path) -> list[Path]:
+    return _git_paths(root)
+
+
+def untracked_files(root: Path) -> list[Path]:
+    """아직 `git add` 하지 않았지만 `.gitignore` 에 걸리지 않는 파일.
+
+    추적 파일만 보던 때에는 새 파일이 검사에서 빠졌다. 2026-09-08 에는 MSDS PDF
+    15건이 미추적이라 409개만 보고 통과했고, 2026-09-13 에는 스캔을 `git add`
+    보다 먼저 돌려 새 파일 3개가 빠진 채 푸시됐다. 순서를 조심하는 것으로는
+    막히지 않았으니, 검사 대상을 `git add -A` 가 올릴 파일에 맞춘다.
+
+    `--exclude-standard` 가 `.gitignore` 를 적용한다. `.env`·`logs/`·`backups/`
+    는 커밋되지 않으니 볼 이유가 없고, `.env` 에는 진짜 비밀이 있어 넣으면
+    매번 실패한다.
+    """
+    return _git_paths(root, "--others", "--exclude-standard")
+
+
+def main(argv: list[str] | None = None, root: Path | None = None) -> int:
+    argv = sys.argv[1:] if argv is None else argv
+    quiet = "--quiet" in argv
+    root = root or Path(__file__).resolve().parent.parent
 
     secrets = load_secrets(root / ".env")
     if not secrets:
@@ -68,9 +96,11 @@ def main() -> int:
         print("건너뜀: .env 에서 대조할 비밀값을 찾지 못했다 (CI·새 클론이면 정상)")
         return 0
 
-    files = [p for p in tracked_files(root) if p.is_file()]
+    tracked = [p for p in tracked_files(root) if p.is_file()]
+    untracked = [p for p in untracked_files(root) if p.is_file()]
+    files = tracked + untracked
     if not files:
-        print("실패: 추적 파일 0개 — 검사가 아무것도 보지 않았다", file=sys.stderr)
+        print("실패: 검사 대상 0개 — 검사가 아무것도 보지 않았다", file=sys.stderr)
         return 2
 
     hits: list[str] = []
@@ -84,13 +114,20 @@ def main() -> int:
                 hits.append(f"{path.relative_to(root).as_posix()} :: {key}")
 
     if hits:
-        print(f"실패: 비밀값 {len(hits)}건이 추적 파일에 있다 — 푸시하지 말 것", file=sys.stderr)
+        print(
+            f"실패: 비밀값 {len(hits)}건이 커밋 대상 파일에 있다 — 푸시하지 말 것 "
+            f"(추적 {len(tracked)}개 + 미추적 {len(untracked)}개 검사)",
+            file=sys.stderr,
+        )
         for hit in sorted(set(hits)):
             print(f"  {hit}", file=sys.stderr)
         return 1
 
     if not quiet:
-        print(f"통과: 추적 파일 {len(files)}개 × 비밀값 {len(secrets)}종 → 0건")
+        print(
+            f"통과: 파일 {len(files)}개 (추적 {len(tracked)} + 미추적 {len(untracked)}) "
+            f"× 비밀값 {len(secrets)}종 → 0건"
+        )
     return 0
 
 
