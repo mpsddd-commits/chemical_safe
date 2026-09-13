@@ -32,6 +32,14 @@ from app.core.types import SynonymType
 
 log = get_logger(__name__)
 
+# The synonym types this projection produces, and therefore the only ones it may
+# replace (BR-98). `synonym_terms()` below is held to this set by a test, so a
+# new type derived here cannot slip past the replacement and accumulate. Rows of
+# any other type belong to another producer - the D11 backfill - and a re-index
+# must leave them alone.
+PROJECTED_SYNONYM_TYPES: frozenset[SynonymType] = frozenset({SynonymType.KO, SynonymType.EN})
+
+
 @dataclass(frozen=True)
 class SubstanceFacts:
     """What a payload actually tells us about a substance.
@@ -132,8 +140,9 @@ def project(repo, payload: dict | None):
     terms = facts.synonym_terms()
     if terms:
         # Replace, not append (BR-98). Appending let a change in name handling
-        # leave the previous spelling behind as a live lookup key.
-        repo.replace_synonyms(substance, terms)
+        # leave the previous spelling behind as a live lookup key. Only this
+        # projection's own types: the backfill's rows are not ours to delete.
+        repo.replace_synonyms(substance, terms, owned_types=PROJECTED_SYNONYM_TYPES)
     log.info(
         "substance_projected",
         extra={"cas_number": facts.cas_number, "synonyms": len(terms)},

@@ -7,6 +7,7 @@ logic unit-testable without a database (NFR-24, NFR-28).
 
 from __future__ import annotations
 
+from collections.abc import Collection
 from datetime import datetime
 
 from sqlalchemy import func, select
@@ -103,9 +104,13 @@ class SubstanceRepo:
         return existing
 
     def replace_synonyms(
-        self, substance: Substance, terms: list[tuple[str, str, SynonymType]]
+        self,
+        substance: Substance,
+        terms: list[tuple[str, str, SynonymType]],
+        *,
+        owned_types: Collection[SynonymType],
     ) -> int:
-        """Replace this substance's synonyms wholesale (BR-98).
+        """Replace the synonyms of the types this caller produces (BR-98).
 
         `add_synonyms` only skips exact duplicates, so a change in how names are
         derived leaves the old rows behind. Measured 2026-08-26: after the source
@@ -115,13 +120,36 @@ class SubstanceRepo:
 
         Same reasoning as BR-54 for chunks: derived data is replaced, not
         accumulated, or a re-index stops being idempotent.
+
+        **Only `owned_types` are replaced.** The table has more than one
+        producer: the NCIS projection writes `ko`/`en`, and
+        `scripts/backfill_synonyms.py` writes `msds_title`/`common_name`/
+        `formula` (D11). Clearing every type let a re-index silently delete the
+        backfill - one job destroying another job's premise, the same shape as
+        the resume path that destroyed its own precondition (`runner.py`).
+
+        `owned_types` is keyword-only and has **no default**. A default of "all
+        types" would hand the next caller the same accident; a default of "the
+        projection's types" would make a second producer replace someone else's
+        rows. Saying which rows you own is the price of deleting any.
         """
-        # `.clear()`, not `session.delete()` per child. The relationship carries
-        # `delete-orphan`, so clearing the collection is what removes the rows;
-        # deleting the objects individually left them in the collection, and the
-        # append that followed was wiped along with them - measured, the table
-        # went to 0 rows instead of 80.
-        substance.synonyms.clear()
+        owned = frozenset(owned_types)
+        if not owned:
+            raise ValueError("owned_types must name at least one SynonymType")
+        foreign = sorted({kind.value for _raw, _norm, kind in terms} - {k.value for k in owned})
+        if foreign:
+            # A term of a type the caller does not own would never be replaced
+            # by this caller again - it would accumulate exactly as BR-98 forbids.
+            raise ValueError(f"terms carry types outside owned_types: {foreign}")
+
+        owned_values = {kind.value for kind in owned}
+        # Remove from the collection, not `session.delete()` per child. The
+        # relationship carries `delete-orphan`, so leaving the collection is what
+        # removes the rows; deleting the objects individually left them in the
+        # collection, and the append that followed was wiped along with them -
+        # measured, the table went to 0 rows instead of 80.
+        for row in [s for s in substance.synonyms if s.term_type in owned_values]:
+            substance.synonyms.remove(row)
         self._s.flush()
         return self.add_synonyms(substance, terms)
 

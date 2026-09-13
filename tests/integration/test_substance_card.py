@@ -198,9 +198,12 @@ class TestLookup:
     def test_un_lookup_returns_nothing_and_says_so(self):
         """BR-109 — "no data", not "unsupported". The path stays."""
         with session_scope() as session:
-            matches, unsupported = SubstanceService(session).search("UN1830")
+            matches, support = SubstanceService(session).search("UN1830")
         assert matches == []
-        assert "un" in unsupported and "alias" in unsupported
+        assert "un" in support.unsupported
+        # Alias support is counted from the table (D11), not declared: it is in
+        # exactly one of the two lists, or in neither when every substance has one.
+        assert not ("alias" in support.unsupported and "alias" in support.partial)
 
     def test_empty_query_is_not_an_error(self):
         with session_scope() as session:

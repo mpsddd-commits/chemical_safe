@@ -40,6 +40,13 @@ MATCH_LABEL = {
     "alias": "이명 일치",
 }
 
+# Key names with their topic particle, for the key-support notice. The particle
+# differs (UN 번호는 / 이명은), and "은(는)" reads as a form, not a sentence.
+KEY_TOPIC = {
+    "un": "UN 번호는",
+    "alias": "이명(異名)은",
+}
+
 
 def _clean_query(raw: str | None) -> str:
     return (raw or "").strip()[:MAX_QUERY_CHARS]
@@ -92,13 +99,15 @@ def search_json(
     q: str = Query(default=""),
     session: Session = Depends(get_session),
 ) -> dict:
-    matches, unsupported = SubstanceService(session).search(_clean_query(q))
+    matches, support = SubstanceService(session).search(_clean_query(q))
     return {
         "query": _clean_query(q),
         "matches": [_ref_dict(m) for m in matches],
         # BR-109/110 - travels with every response so a client cannot quietly
-        # omit that UN numbers and aliases have no data behind them.
-        "unsupported_keys": list(unsupported),
+        # omit that UN numbers have no data behind them, or that aliases are
+        # registered for some substances only.
+        "unsupported_keys": list(support.unsupported),
+        "partial_keys": list(support.partial),
     }
 
 
@@ -119,10 +128,16 @@ def search_page(
     is_admin: bool = Depends(admin_flag),
 ) -> HTMLResponse:
     query = _clean_query(q)
+    service = SubstanceService(session)
     matches: list[SubstanceRef] = []
-    unsupported: tuple[str, ...] = ()
     if query:
-        matches, unsupported = SubstanceService(session).search(query)
+        matches, support = service.search(query)
+    else:
+        # Before any search too. The header lists 이명 as a searchable key, and
+        # without the notice beside it that line over-claims on the empty page -
+        # the template's own rule is that key support is shown always.
+        support = service.key_support()
+    unsupported, partial = support.unsupported, support.partial
 
     # One match still goes to the list rather than redirecting: with a substring
     # search, "one result today" can become "three results tomorrow", and a page
@@ -138,6 +153,8 @@ def search_page(
             "searched": bool(query),
             "matches": matches,
             "unsupported_keys": list(unsupported),
+            "partial_keys": list(partial),
+            "key_topic": KEY_TOPIC,
             "match_label": MATCH_LABEL,
         },
     )

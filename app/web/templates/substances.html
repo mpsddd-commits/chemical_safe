@@ -24,11 +24,20 @@
     <button type="submit" data-testid="substance-submit">검색</button>
   </form>
 
+  {#- Three states per key (BR-109, BR-110): searchable, searchable only where
+      the data exists, no data. Aliases are the middle one since D11 - saying
+      "no data" under-claims, and listing 이명 bare over-claims, because most
+      substances carry none. No count in the sentence: it goes stale the day an
+      alias is added. -#}
   <p class="notice-keys" data-testid="supported-keys">
     ℹ️ 검색 가능: 국문명 · 영문명 · CAS 번호
-    {%- if unsupported_keys %}
-    <br>UN 번호와 이명(異名)은 <strong>현재 데이터가 없습니다.</strong>
+    {%- if 'alias' not in unsupported_keys %} · 이명(異名){% endif %}
+    {%- if 'alias' in partial_keys %}
+    <br><span data-testid="partial-key-alias">{{ key_topic.alias }} 일부 물질에만 등록되어 있습니다. 이명으로 찾지 못하면 국문명 · 영문명 · CAS 번호로 다시 검색하십시오.</span>
     {%- endif %}
+    {%- for key in unsupported_keys %}
+    <br><span data-testid="unsupported-key-{{ key }}">{{ key_topic.get(key, key) }} <strong>현재 데이터가 없습니다.</strong></span>
+    {%- endfor %}
   </p>
 
   {% if searched %}

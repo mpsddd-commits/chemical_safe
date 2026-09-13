@@ -10,7 +10,7 @@ from __future__ import annotations
 from sqlalchemy.orm import Session
 
 from app.substances.card import SubstanceCardBuilder
-from app.substances.lookup import UNSUPPORTED_KEYS, SubstanceLookup
+from app.substances.lookup import KeySupport, SubstanceLookup
 from app.substances.types import SubstanceCard, SubstanceRef
 
 
@@ -19,15 +19,19 @@ class SubstanceService:
         self._lookup = SubstanceLookup(session)
         self._builder = SubstanceCardBuilder(session)
 
-    def search(self, query: str) -> tuple[list[SubstanceRef], tuple[str, ...]]:
-        """W13 - returns (candidates, unsupported key types).
+    def search(self, query: str) -> tuple[list[SubstanceRef], KeySupport]:
+        """W13 - returns (candidates, which key types the data can answer).
 
-        The unsupported list travels with every result rather than living only
-        in the template, so a screen cannot quietly omit that UN numbers and
-        aliases have no data behind them (BR-109, BR-110). Same device as u2's
-        `unpriced_calls`.
+        The key support travels with every result rather than living only in
+        the template, so a screen cannot quietly omit that UN numbers have no
+        data behind them, or that aliases exist for some substances only
+        (BR-109, BR-110). Same device as u2's `unpriced_calls`.
         """
-        return self._lookup.search(query), UNSUPPORTED_KEYS
+        return self._lookup.search(query), self._lookup.key_support()
+
+    def key_support(self) -> KeySupport:
+        """The same notice for a page that has not searched yet."""
+        return self._lookup.key_support()
 
     def card(self, substance_id: int) -> SubstanceCard | None:
         """W14 - seven items, always, in order (BR-102)."""

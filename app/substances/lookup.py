@@ -9,8 +9,9 @@ handed back rather than resolved (BR-101).
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
 
-from sqlalchemy import select
+from sqlalchemy import distinct, func, select
 from sqlalchemy.orm import Session
 
 from app.core.types import MatchKind, SynonymType
@@ -21,15 +22,55 @@ from app.substances.types import SubstanceRef
 CAS_PATTERN = re.compile(r"^\d{2,7}-\d{2}-\d$")
 UN_PATTERN = re.compile(r"^UN\s?(\d{4})$", re.IGNORECASE)
 
-# FR-26 asks for five key types. Two have no data behind them, and saying so is
-# part of the contract rather than a footnote (BR-109, BR-110).
-UNSUPPORTED_KEYS: tuple[str, ...] = (MatchKind.UN.value, MatchKind.ALIAS.value)
+# FR-26 asks for five key types. UN numbers have no data behind them, and saying
+# so is part of the contract rather than a footnote (BR-109).
+UNSUPPORTED_KEYS: tuple[str, ...] = (MatchKind.UN.value,)
 
 _SYNONYM_KIND = {
     SynonymType.KO: MatchKind.NAME_KO,
     SynonymType.EN: MatchKind.NAME_EN,
     SynonymType.ALIAS: MatchKind.ALIAS,
+    # D11 backfill: a published other name is an alias, not the master's
+    # name_ko - falling through to the NAME_KO default would say otherwise.
+    SynonymType.MSDS_TITLE: MatchKind.ALIAS,
+    SynonymType.COMMON_NAME: MatchKind.ALIAS,
+    SynonymType.FORMULA: MatchKind.ALIAS,
 }
+
+# Derived from the map above, so a synonym type that starts answering as an
+# alias is counted as one without a second list to keep in step.
+ALIAS_SYNONYM_TYPES: frozenset[SynonymType] = frozenset(
+    kind for kind, match in _SYNONYM_KIND.items() if match is MatchKind.ALIAS
+)
+
+
+@dataclass(frozen=True)
+class KeySupport:
+    """Which FR-26 key types the data behind the search can answer (BR-109, BR-110).
+
+    Three states, because two were a lie in one direction or the other. Alias
+    rows now exist for some substances (D11): calling aliases unsupported
+    under-claims (H2SO4 finds 황산), and dropping the notice over-claims (most
+    substances carry no alias at all). `partial` says the key works where the
+    data exists and not everywhere.
+    """
+
+    unsupported: tuple[str, ...]
+    partial: tuple[str, ...]
+
+
+def classify_alias(substances: int, with_alias: int) -> str | None:
+    """`"unsupported"`, `"partial"`, or None when every substance has an alias.
+
+    Counted at request time rather than written into a sentence: a number in
+    the notice becomes false the day an alias is added (the reason D10 took
+    "49종" out of the refusal text).
+    """
+    if with_alias <= 0:
+        return "unsupported"
+    if with_alias < substances:
+        return "partial"
+    return None
 
 
 class SubstanceLookup:
@@ -90,6 +131,28 @@ class SubstanceLookup:
         # rest stay visible below rather than being dropped.
         refs.sort(key=lambda r: (not _is_exact(r, normalized), r.display_name))
         return refs
+
+    def key_support(self) -> KeySupport:
+        """What the table can answer right now, counted, not assumed."""
+        substances = self._s.scalar(select(func.count()).select_from(Substance)) or 0
+        with_alias = (
+            self._s.scalar(
+                select(func.count(distinct(SubstanceSynonym.substance_id))).where(
+                    SubstanceSynonym.term_type.in_(
+                        sorted(kind.value for kind in ALIAS_SYNONYM_TYPES)
+                    )
+                )
+            )
+            or 0
+        )
+        unsupported = list(UNSUPPORTED_KEYS)
+        partial: list[str] = []
+        state = classify_alias(substances, with_alias)
+        if state == "unsupported":
+            unsupported.append(MatchKind.ALIAS.value)
+        elif state == "partial":
+            partial.append(MatchKind.ALIAS.value)
+        return KeySupport(unsupported=tuple(unsupported), partial=tuple(partial))
 
     def get(self, substance_id: int) -> SubstanceRef | None:
         substance = self._s.get(Substance, substance_id)
