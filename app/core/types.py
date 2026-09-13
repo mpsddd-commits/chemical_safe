@@ -43,6 +43,25 @@ class PolicyDecision(StrEnum):
     UNKNOWN = "unknown"
 
 
+class PolicyCheckScope(StrEnum):
+    """What one `policy_check` row is a verdict *about* (D8).
+
+    The checker judges per origin, and a source's `base_url` is not always where
+    its documents live - `msds_pdf` points at msds.kosha.or.kr while every PDF
+    in its manifest sits on a vendor host. A row that does not say which of the
+    two it is gets read as "the policy of this source", which is how the audit
+    trail was misread on 2026-09-07.
+    """
+
+    # `IngestionService.start` - the source's own base_url, before a job exists.
+    # It gates whether a job is created at all; it says nothing about the hosts
+    # the documents are fetched from.
+    SOURCE_BASE_URL = "source_base_url"
+    # The origin of a document actually fetched in a job - the verdict that
+    # `IngestionOrchestrator._handle_one` enforced.
+    DOCUMENT_ORIGIN = "document_origin"
+
+
 class JobKind(StrEnum):
     INGEST = "ingest"
     INDEX = "index"

@@ -37,6 +37,7 @@ from app.core.types import (
     ItemStatus,
     JobKind,
     JobStatus,
+    PolicyCheckScope,
     PolicyDecision,
     Role,
     StructureStatus,
@@ -370,13 +371,27 @@ class JobItem(Base):
 
 
 class PolicyCheck(Base):
-    """E12 - the audit trail proving blocked sources were NOT collected (CON-3)."""
+    """E12 - the audit trail proving blocked sources were NOT collected (CON-3).
+
+    Two kinds of row (D8, `scope`): the source-level check of `base_url` made
+    before a job is created, and one row per document origin per job for the
+    verdicts the orchestrator enforced. Only the second says what a run hit.
+    """
 
     __tablename__ = "policy_check"
-    __table_args__ = (Index("ix_policy_source_checked", "source_id", "checked_at"),)
+    __table_args__ = (
+        Index("ix_policy_source_checked", "source_id", "checked_at"),
+        Index("ix_policy_job", "job_id"),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
     source_id: Mapped[int | None] = mapped_column(ForeignKey("source.id", ondelete="SET NULL"))
+    scope: Mapped[str] = mapped_column(
+        String(32), nullable=False, default=PolicyCheckScope.SOURCE_BASE_URL.value
+    )
+    # NULL for `source_base_url` rows - that check runs before the job exists.
+    job_id: Mapped[int | None] = mapped_column(ForeignKey("job.id", ondelete="SET NULL"))
+    # `source_base_url`: the base_url as configured. `document_origin`: scheme://host.
     url: Mapped[str] = mapped_column(String(1000), nullable=False)
     decision: Mapped[str] = mapped_column(String(32), nullable=False)
     reason: Mapped[str | None] = mapped_column(Text)

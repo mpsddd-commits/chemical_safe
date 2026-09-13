@@ -19,6 +19,7 @@ from app.core.logging import get_logger
 from app.core.types import PipelineStage, RawDocument, SourceRef
 from app.ingestion.change_detector import ChangeDetector
 from app.ingestion.policy import AccessPolicyChecker
+from app.ingestion.policy_audit import PolicyVerdictRecorder
 from app.ingestion.retry import RetryPolicy
 from app.jobs.tracker import JobTracker
 from app.ports.source import SourceAdapter
@@ -52,6 +53,7 @@ class IngestionOrchestrator:
         *,
         settings: Settings | None = None,
         sleep: Callable[[float], None] = time.sleep,
+        recorder: PolicyVerdictRecorder | None = None,
     ) -> None:
         self._adapter = adapter
         self._tracker = tracker
@@ -60,6 +62,7 @@ class IngestionOrchestrator:
         self._settings = settings or get_settings()
         self._retry = RetryPolicy.from_settings(self._settings)
         self._sleep = sleep
+        self._recorder = recorder
 
     def run(
         self,
@@ -109,6 +112,10 @@ class IngestionOrchestrator:
     ) -> None:
         # BR-03 - every fetch is preceded by a policy verdict, per URL.
         verdict = self._policy.check(ref.url)
+        # D8 - record the verdict that is about to be enforced, blocked ones
+        # included, before acting on it. Recording never changes the decision.
+        if self._recorder is not None:
+            self._recorder.observe(job_id, ref.url, verdict)
         if verdict.decision.value == "blocked":
             self._fail(
                 job_id, ref, PolicyBlockedError(verdict.reason), outcome,

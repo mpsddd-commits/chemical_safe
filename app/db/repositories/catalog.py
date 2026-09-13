@@ -13,7 +13,7 @@ from datetime import datetime
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.core.types import PolicyDecision, SynonymType
+from app.core.types import PolicyCheckScope, PolicyDecision, SynonymType
 from app.db.models import PolicyCheck, Source, Substance, SubstanceSynonym
 
 
@@ -47,10 +47,16 @@ class SourceRepo:
         checked_at: datetime,
     ) -> None:
         """CON-3 - the fact that a blocked source was *not* collected is itself
-        an auditable record."""
+        an auditable record.
+
+        This is the check of the source's `base_url` only (D8). It gates job
+        creation and feeds `source.policy_*`; it is not the verdict for the
+        hosts the documents come from - see `record_document_origin_policy`.
+        """
         self._s.add(
             PolicyCheck(
                 source_id=source.id if source else None,
+                scope=PolicyCheckScope.SOURCE_BASE_URL.value,
                 url=url,
                 decision=decision.value,
                 reason=reason,
@@ -62,6 +68,57 @@ class SourceRepo:
             source.policy_reason = reason
             source.policy_checked_at = checked_at
         self._s.flush()
+
+    def record_document_origin_policy(
+        self,
+        source: Source,
+        job_id: int,
+        origin: str,
+        decision: PolicyDecision,
+        reason: str | None,
+        checked_at: datetime,
+    ) -> None:
+        """D8 - a verdict the orchestrator enforced on a document origin in a job.
+
+        `source.policy_*` is deliberately left alone. That state gates the
+        collect button for the whole source, and one vendor host refusing its
+        documents does not make the source itself uncollectable - those
+        documents already fail as `policy_blocked` items.
+        """
+        self._s.add(
+            PolicyCheck(
+                source_id=source.id,
+                scope=PolicyCheckScope.DOCUMENT_ORIGIN.value,
+                job_id=job_id,
+                url=origin,
+                decision=decision.value,
+                reason=reason,
+                checked_at=checked_at,
+            )
+        )
+        self._s.flush()
+
+    def latest_document_origin_checks(self, source: Source) -> list[PolicyCheck]:
+        """The document-origin verdicts of the most recent job that recorded any."""
+        latest_job = self._s.scalar(
+            select(func.max(PolicyCheck.job_id)).where(
+                PolicyCheck.source_id == source.id,
+                PolicyCheck.scope == PolicyCheckScope.DOCUMENT_ORIGIN.value,
+            )
+        )
+        if latest_job is None:
+            return []
+        return list(
+            self._s.scalars(
+                select(PolicyCheck)
+                .where(
+                    PolicyCheck.source_id == source.id,
+                    PolicyCheck.scope == PolicyCheckScope.DOCUMENT_ORIGIN.value,
+                    PolicyCheck.job_id == latest_job,
+                )
+                .order_by(PolicyCheck.url, PolicyCheck.checked_at)
+            )
+        )
 
     def mark_collected(self, source: Source, when: datetime) -> None:
         """BR-13 - only advanced on succeeded/partial so a failed run re-covers

@@ -105,8 +105,14 @@ class AccessPolicyChecker:
 
     @staticmethod
     def _origin(url: str) -> str:
-        parts = urlparse(url)
-        return f"{parts.scheme}://{parts.netloc}"
+        return origin_of(url)
+
+
+def origin_of(url: str) -> str:
+    """The unit a verdict applies to - the cache key above and the unit the
+    audit trail records (D8). One definition so the two cannot drift."""
+    parts = urlparse(url)
+    return f"{parts.scheme}://{parts.netloc}"
 
 
 class AllowAllPolicyChecker:

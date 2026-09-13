@@ -51,7 +51,7 @@ def cmd_sources(_args: argparse.Namespace) -> int:
         )
         print(
             f"{row['source_id']:<{width}}  {row['doc_type']:<9} "
-            f"policy={row['policy_status']:<8} key={key_state}"
+            f"base_url_policy={row['policy_status']:<8} key={key_state}"
         )
     return 0
 

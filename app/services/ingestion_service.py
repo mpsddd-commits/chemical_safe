@@ -35,7 +35,8 @@ from app.ingestion import substance_selection
 from app.ingestion.change_detector import ChangeDetector
 from app.ingestion.orchestrator import IngestionOrchestrator
 from app.ingestion.originals import ensure_originals_writable
-from app.ingestion.policy import AccessPolicyChecker
+from app.ingestion.policy import AccessPolicyChecker, PolicyVerdict
+from app.ingestion.policy_audit import PolicyVerdictRecorder
 from app.jobs.tracker import JobTracker
 from app.services.indexing_service import IndexingService
 
@@ -89,8 +90,24 @@ class IngestionService:
                     "name": source.name,
                     "kind": source.kind,
                     "doc_type": source.doc_type,
+                    # D8 - these three are the verdict on `base_url` alone,
+                    # checked before a job is created. Documents are judged per
+                    # host during the run; those verdicts are
+                    # `document_origin_checks`, from the latest job.
+                    "base_url": source.base_url,
                     "policy_status": source.policy_status,
                     "policy_reason": source.policy_reason,
+                    "policy_checked_at": source.policy_checked_at,
+                    "document_origin_checks": [
+                        {
+                            "job_id": row.job_id,
+                            "origin": row.url,
+                            "decision": row.decision,
+                            "reason": row.reason,
+                            "checked_at": row.checked_at,
+                        }
+                        for row in self._sources.latest_document_origin_checks(source)
+                    ],
                     "last_collected_at": source.last_collected_at,
                     "requires_api_key": source.requires_api_key,
                     "api_key_env": source.api_key_env,
@@ -117,7 +134,10 @@ class IngestionService:
                     f"인증키 미설정: {source.api_key_env} 환경변수를 설정하세요",
                 )
 
-        # BR-03 - a blocked source does not get a job at all.
+        # BR-03 - a blocked source does not get a job at all. This judges the
+        # base_url only (D8): it can refuse a source, but it is not the verdict
+        # for the hosts the documents are fetched from. Those are checked per
+        # document in the orchestrator and recorded per origin in `execute`.
         verdict = self._policy.check(source.base_url)
         self._sources.record_policy(
             source, source.base_url, verdict.decision, verdict.reason, verdict.checked_at
@@ -202,8 +222,18 @@ class IngestionService:
         self._tracker.start(job_id)
 
         since_dt = datetime.fromisoformat(since) if since else source.last_collected_at
+        def record_verdict(job: int, origin: str, verdict: PolicyVerdict) -> None:
+            self._sources.record_document_origin_policy(
+                source, job, origin, verdict.decision, verdict.reason, verdict.checked_at
+            )
+
         orchestrator = IngestionOrchestrator(
-            adapter, self._tracker, self._policy, self._changes, settings=self._settings
+            adapter,
+            self._tracker,
+            self._policy,
+            self._changes,
+            settings=self._settings,
+            recorder=PolicyVerdictRecorder(record_verdict),
         )
 
         def known_document_for(ref: SourceRef):
