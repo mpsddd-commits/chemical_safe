@@ -27,6 +27,7 @@ import io
 from app.auth.types import UploadCandidate, UploadVerdict
 from app.core.config import Settings, get_settings
 from app.core.logging import get_logger
+from app.core.sizes import format_sizes
 
 log = get_logger(__name__)
 
@@ -55,12 +56,8 @@ class UploadValidator:
         if candidate.size_bytes == 0:
             return UploadVerdict(False, reason="빈 파일입니다.")
         if candidate.size_bytes > settings.upload_max_bytes:
-            limit_mb = settings.upload_max_bytes / (1024 * 1024)
-            actual_mb = candidate.size_bytes / (1024 * 1024)
-            return UploadVerdict(
-                False,
-                reason=f"파일 크기 {actual_mb:.1f}MB (한도 {limit_mb:.0f}MB)",
-            )
+            actual, limit = format_sizes(candidate.size_bytes, settings.upload_max_bytes)
+            return UploadVerdict(False, reason=f"파일 크기 {actual} (한도 {limit})")
 
         # 2. Magic bytes. The extension and the MIME type are what the uploader
         #    claims; this is what the file is.

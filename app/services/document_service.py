@@ -24,6 +24,7 @@ from app.auth.types import AuthenticatedUser, UploadCandidate
 from app.core.config import Settings, get_settings
 from app.core.errors import ValidationError
 from app.core.logging import get_logger
+from app.core.sizes import format_sizes
 from app.core.types import DocType, StructureStatus
 from app.db.models import Document
 from app.db.repositories.accounts import UserRepo
@@ -138,11 +139,8 @@ class DocumentService:
                 "기존 문서를 삭제한 뒤 다시 시도하세요."
             )
         if used_bytes + incoming > self._settings.upload_quota_bytes:
-            limit_mb = self._settings.upload_quota_bytes / (1024 * 1024)
-            used_mb = used_bytes / (1024 * 1024)
-            raise ValidationError(
-                f"저장 용량 한도를 초과합니다 (사용 {used_mb:.0f}MB / 한도 {limit_mb:.0f}MB)."
-            )
+            used, limit = format_sizes(used_bytes, self._settings.upload_quota_bytes)
+            raise ValidationError(f"저장 용량 한도를 초과합니다 (사용 {used} / 한도 {limit}).")
 
     # ---- W23 list / delete / reindex ----
     def list_documents(self, user: AuthenticatedUser) -> list[DocumentSummary]:

@@ -24,7 +24,7 @@
     <input type="file" name="file" accept="application/pdf" required
            data-testid="upload-file">
     <button type="submit" data-testid="upload-submit">업로드</button>
-    <p class="hint">PDF · 20MB 이하 · 200페이지 이하</p>
+    <p class="hint">PDF · {{ upload_max_bytes|filesize }} 이하 · {{ upload_max_pages }}페이지 이하</p>
   </form>
 
   {% if documents %}
@@ -36,7 +36,7 @@
       {% for doc in documents %}
       <tr data-testid="document-row">
         <td>{{ doc.filename }}</td>
-        <td>{{ '%.1f'|format(doc.size_bytes / 1048576) }}MB</td>
+        <td>{{ doc.size_bytes|filesize }}</td>
         <td>{{ doc.page_count if doc.page_count is not none else '—' }}</td>
         <td data-testid="document-status">
           {# 색인 실패를 "진행 중"으로 보이게 두지 않는다. 빈 PDF·스캔 PDF 는

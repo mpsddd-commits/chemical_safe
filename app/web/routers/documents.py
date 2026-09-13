@@ -15,8 +15,10 @@ from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session
 
 from app.auth.types import AuthenticatedUser, UploadCandidate
+from app.core.config import get_settings
 from app.core.errors import PermissionDeniedError, ValidationError
 from app.core.logging import get_logger
+from app.core.sizes import format_size
 from app.jobs.queue import TaskQueue
 from app.services.account_service import AccountService
 from app.services.document_service import DocumentService
@@ -34,17 +36,29 @@ router = APIRouter(tags=["documents"])
 
 TEMPLATE_DIR = Path(__file__).resolve().parent.parent / "templates"
 templates = Jinja2Templates(directory=str(TEMPLATE_DIR))
+# B8 - sizes on this screen come from the same formatter as the rejection
+# reasons, so a 40KB upload does not read "0.0MB" next to a limit that does not.
+templates.env.filters["filesize"] = format_size
 
 
 def _render(request: Request, template: str, **context) -> HTMLResponse:
     token = issue_csrf(request)
     status_code = context.pop("status_code", 200)
+    settings = get_settings()
     response = templates.TemplateResponse(
         request,
         template,
         # B3 - False unless the caller says otherwise, so a screen that forgets
         # to ask hides the admin links rather than offering a 403.
-        {"csrf_token": token, "is_admin": False, **context},
+        {
+            "csrf_token": token,
+            "is_admin": False,
+            # The hint under the upload form reads the limits BR-139 enforces
+            # instead of repeating them: a changed setting changes both at once.
+            "upload_max_bytes": settings.upload_max_bytes,
+            "upload_max_pages": settings.upload_max_pages,
+            **context,
+        },
         status_code=status_code,
     )
     set_csrf_cookie(response, token)
