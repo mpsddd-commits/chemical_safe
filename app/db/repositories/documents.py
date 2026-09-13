@@ -150,6 +150,21 @@ class DocumentRepo:
             )
         self._s.flush()
 
+    def linked_substance_ids(self, document_id: int) -> list[int]:
+        """The substances `document_substance` links this document to (BR-36).
+
+        This table is the single source for "which substances is this document
+        about"; `chunk.meta.substance_ids` is a copy stamped from what this
+        returns, never from anything computed alongside it (D12).
+        """
+        return list(
+            self._s.scalars(
+                select(DocumentSubstance.substance_id)
+                .where(DocumentSubstance.document_id == document_id)
+                .order_by(DocumentSubstance.substance_id)
+            )
+        )
+
     def substance_mentions(self, exclude_source_pk: int | None = None) -> list[str]:
         """BR-08 - the substance names the corpus already talks about.
 

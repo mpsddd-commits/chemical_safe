@@ -11,7 +11,7 @@ exists.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 
 from sqlalchemy import select
@@ -74,6 +74,10 @@ class IndexOutcome:
     chunk_count: int
     structure_status: str
     embedded: bool
+    # D12 - substances still linked although this run resolved none. Empty in
+    # the ordinary case; non-empty means someone should look (see
+    # `_settle_substance_links`).
+    substance_links_kept: list[int] = field(default_factory=list)
 
 
 def build_embedder(settings: Settings, traces: TraceRepo | None = None) -> Embedder:
@@ -196,11 +200,7 @@ class IndexingService:
         self._project_substance(raw)
 
         links = self._resolve_substances(raw, doc_type, ctx.extracted.text, document.title)
-        if links:
-            self._documents.link_substances(document, links)
-            substance_ids = list(dict.fromkeys(sid for sid, _relation in links))
-            for chunk in ctx.chunks:
-                chunk.meta.substance_ids = substance_ids
+        kept_substance_ids = self._settle_substance_links(document, doc_type, links, ctx.chunks)
 
         # BR-54 - full replace keeps re-processing idempotent.
         chunk_rows = self._chunks.replace_for_document(
@@ -236,6 +236,7 @@ class IndexingService:
             chunk_count=len(chunk_rows),
             structure_status=ctx.structured.structure_status.value,
             embedded=embedded,
+            substance_links_kept=kept_substance_ids,
         )
 
     # ---- W4 ----
@@ -271,6 +272,7 @@ class IndexingService:
         tracker.add_items(job_id, [str(d) for d in document_ids])
 
         succeeded = failed = 0
+        links_kept: list[int] = []
         for document_id in document_ids:
             try:
                 with session_scope() as doc_session:
@@ -286,8 +288,17 @@ class IndexingService:
             else:
                 tracker.mark_succeeded(job_id, str(document_id), outcome.document_id)
                 succeeded += 1
+                if outcome.substance_links_kept:
+                    links_kept.append(outcome.document_id)
         status = tracker.finalize(job_id)
-        return {"succeeded": succeeded, "failed": failed, "status": status.value}
+        return {
+            "succeeded": succeeded,
+            "failed": failed,
+            "status": status.value,
+            # D12 - documents whose links survived an empty resolution. A run
+            # that reports them is not a failure, but it is not silent either.
+            "substance_links_kept": links_kept,
+        }
 
     def needs_reindex(self) -> bool:
         return self._reindexer.needs_reindex(self._embedder.model_id())
@@ -382,6 +393,59 @@ class IndexingService:
         msds_synonyms.register(
             self._substances, document.id, current, others, base_names, labels
         )
+
+    def _settle_substance_links(
+        self,
+        document: Document,
+        doc_type: DocType,
+        links: list[tuple[int, SubstanceRelation]],
+        chunks,
+    ) -> list[int]:
+        """Write the links, then stamp the chunks from the table - not from `links`.
+
+        "Which substances is this document about" is one fact written in two
+        places: `document_substance` (read by the card) and
+        `chunk.meta.substance_ids` (the denormalised copy BR-35 puts on every
+        chunk). BR-36 names the relational table the single source, so the chunks
+        are stamped from what the table holds *after* this step. The two cannot
+        disagree because one is read from the other.
+
+        They used to disagree (D12). An empty resolution skipped the link write
+        but still stamped the chunks from the empty result, so the table kept its
+        rows while every chunk said "no substance" - document 24 lost
+        `substance_ids` on 16 chunks when D13 stripped the CAS.
+
+        **An empty resolution does not delete links.** D13 is exactly the case: the
+        resolution came back empty *because of a defect*, and treating that as
+        "this document is about nothing" would have turned one defect into lost
+        data. Nothing here can tell that apart from a document that genuinely
+        stopped being about its substance, so the conservative side wins - the
+        links stay - and the disagreement is surfaced instead of absorbed: a
+        warning log, `IndexOutcome.substance_links_kept`, and the re-index job
+        summary. Removing a link that really is gone is a decision for whoever
+        reads that, not for a re-index run.
+
+        A resolution that finds anything replaces the links as before (BR-37).
+
+        Returns the substance ids kept despite an empty resolution.
+        """
+        if links:
+            self._documents.link_substances(document, links)
+        substance_ids = self._documents.linked_substance_ids(document.id)
+        for chunk in chunks:
+            chunk.meta.substance_ids = list(substance_ids)
+        if links or not substance_ids:
+            return []
+        log.warning(
+            "substance_links_kept_unresolved",
+            extra={
+                "document_id": document.id,
+                "doc_type": doc_type.value,
+                "kept_substance_ids": substance_ids,
+                "impact": "links kept; resolution found none - check the document or its CAS",
+            },
+        )
+        return substance_ids
 
     def _resolve_substances(
         self, raw, doc_type: DocType, text: str, title: str | None
