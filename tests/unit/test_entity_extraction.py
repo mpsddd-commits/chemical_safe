@@ -119,6 +119,37 @@ class TestSynonyms:
         # Resolved by rules, so the LLM would not be called even if enabled.
         assert intent.resolved_by_rules
 
+    def test_an_ambiguous_document_owned_name_is_not_resolvable(self):
+        """BR-73a - nothing here picks one substance, so an ambiguous name must not match.
+
+        `_match_synonyms` returns every matching term and `_cas_for_names` turns
+        them all into CAS numbers: a document-owned name another substance's
+        name contains would pull that substance's records in at exact-match
+        rank. Both readers carry the same filter; its meaning against real rows
+        is pinned in `tests/integration/test_substance_card.py`.
+        """
+        from sqlalchemy.dialects import postgresql
+
+        from app.rag.retrieval.retrievers import Retrievers
+
+        seen: list = []
+
+        class Capturing(FakeSession):
+            def execute(self, stmt):
+                seen.append(stmt)
+                return super().execute(stmt)
+
+        EntityExtractor(Capturing([]), None, settings=_settings()).extract("황산 보호구")
+        retrievers = Retrievers.__new__(Retrievers)
+        retrievers._s = Capturing([])
+        retrievers._cas_for_names(["황산"])
+
+        assert len(seen) == 2
+        for stmt in seen:
+            sql = str(stmt.compile(dialect=postgresql.dialect())).lower()
+            assert "substance_synonym.source_document_id is null" in sql
+            assert "not (exists" in sql and "strpos(" in sql
+
     def test_unresolved_term_is_still_searched_verbatim(self):
         """Dropping it would lose the only thing the user actually named."""
         extractor = EntityExtractor(FakeSession([]), None, settings=_settings())

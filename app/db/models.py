@@ -124,8 +124,18 @@ class SubstanceSynonym(Base):
 
     __tablename__ = "substance_synonym"
     __table_args__ = (
-        UniqueConstraint("substance_id", "normalized_term", "term_type", name="uq_synonym_term"),
+        # NULLS NOT DISTINCT: the substance-owned ko/en rows (NULL document)
+        # stay unique per type, and two documents may each hold the same name.
+        UniqueConstraint(
+            "substance_id",
+            "normalized_term",
+            "term_type",
+            "source_document_id",
+            name="uq_synonym_term",
+            postgresql_nulls_not_distinct=True,
+        ),
         Index("ix_synonym_normalized", "normalized_term"),
+        Index("ix_synonym_source_document", "source_document_id"),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -135,6 +145,13 @@ class SubstanceSynonym(Base):
     term: Mapped[str] = mapped_column(String(300), nullable=False)
     normalized_term: Mapped[str] = mapped_column(String(300), nullable=False)
     term_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    # The document that prints this name (BR-99 revised 2026-09-13) and the
+    # owner that replaces it on re-index. NULL for ko/en: those mirror
+    # `substance.name_ko`/`name_en`, whose owner is the substance row itself
+    # (migration 0008 explains why not the record document).
+    source_document_id: Mapped[int | None] = mapped_column(
+        ForeignKey("document.id", ondelete="CASCADE")
+    )
 
     substance: Mapped[Substance] = relationship(back_populates="synonyms")
 
@@ -176,6 +193,12 @@ class Document(Base):
     upload_size_bytes: Mapped[int | None] = mapped_column(Integer)
     upload_page_count: Mapped[int | None] = mapped_column(Integer)
     law_name: Mapped[str | None] = mapped_column(String(200))
+    # The CAS a source declared for this document outside its content - the
+    # MSDS manifest's `cas_number`, delivered in `ref.extra`. Kept so that
+    # re-indexing from the original writes the same `meta.cas_number` the
+    # collection did (migration 0009). NULL for JSON records, whose CAS lives in
+    # the payload, and for a mixture datasheet, which has none.
+    cas_number: Mapped[str | None] = mapped_column(String(20))
     incident_occurred_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False

@@ -19,6 +19,7 @@ from app.db.models import (
     DocumentSection,
     DocumentSubstance,
     ExtractedTextRow,
+    Substance,
 )
 
 
@@ -56,6 +57,7 @@ class DocumentRepo:
         original_media_type: str | None = None,
         structure_status: StructureStatus = StructureStatus.STRUCTURED,
         law_name: str | None = None,
+        cas_number: str | None = None,
         incident_occurred_at: datetime | None = None,
         owner_id: int | None = None,
     ) -> Document:
@@ -78,6 +80,7 @@ class DocumentRepo:
         doc.original_media_type = original_media_type
         doc.structure_status = structure_status.value
         doc.law_name = law_name
+        doc.cas_number = cas_number
         doc.incident_occurred_at = incident_occurred_at
         doc.owner_id = owner_id  # always None in u1 (DD-21)
         self._s.flush()
@@ -186,6 +189,62 @@ class DocumentRepo:
         titles = self._s.execute(stmt).all()
 
         return [str(row[0]) for row in [*sections, *titles] if row[0]]
+
+    def single_subject_msds(
+        self, exclude_document_id: int
+    ) -> list[tuple[int, str | None, int, str | None, str, list[tuple[str, str | None]]]]:
+        """Every public MSDS document about exactly one substance, but one.
+
+        Returns (document id, title, substance id, CAS, extracted text,
+        [(chunk text, section code)] in chunk order) - what synonym extraction
+        reads (`app/substances/msds_synonyms.py`). One subject is the filter: a
+        mixture datasheet lists fourteen constituents and is the datasheet of
+        none, so nothing it prints is a name of any of them. Owner-scoped
+        documents are left out because `substance_synonym` is public (u5).
+        """
+        subject = SubstanceRelation.SUBJECT.value
+        docs = self._s.execute(
+            select(
+                Document.id,
+                Document.title,
+                func.min(DocumentSubstance.substance_id),
+                ExtractedTextRow.text,
+            )
+            .join(DocumentSubstance, DocumentSubstance.document_id == Document.id)
+            .join(ExtractedTextRow, ExtractedTextRow.document_id == Document.id)
+            .where(
+                Document.doc_type == DocType.MSDS.value,
+                Document.owner_id.is_(None),
+                Document.id != exclude_document_id,
+                DocumentSubstance.relation == subject,
+            )
+            .group_by(Document.id, Document.title, ExtractedTextRow.text)
+            .having(func.count(func.distinct(DocumentSubstance.substance_id)) == 1)
+            .order_by(Document.id)
+        ).all()
+        if not docs:
+            return []
+
+        ids = [row[0] for row in docs]
+        cas_of = dict(
+            self._s.execute(
+                select(Substance.id, Substance.cas_number).where(
+                    Substance.id.in_({row[2] for row in docs})
+                )
+            ).all()
+        )
+        chunks: dict[int, list[tuple[str, str | None]]] = {i: [] for i in ids}
+        for document_id, text, section_code in self._s.execute(
+            select(ChunkRow.document_id, ChunkRow.text, DocumentSection.section_code)
+            .outerjoin(DocumentSection, DocumentSection.id == ChunkRow.section_id)
+            .where(ChunkRow.document_id.in_(ids))
+            .order_by(ChunkRow.document_id, ChunkRow.ordinal)
+        ).all():
+            chunks[document_id].append((text, section_code))
+        return [
+            (did, title, sid, cas_of.get(sid), text, chunks[did])
+            for did, title, sid, text in docs
+        ]
 
     def delete(self, document_id: int) -> None:
         """BR-56 - cascades remove text, sections, chunks, embeddings and links.

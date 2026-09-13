@@ -90,15 +90,109 @@ class TestMasterIsPopulated:
 
 class TestSynonyms:
     def test_only_source_names_are_registered(self):
-        """BR-99 — no generated aliases."""
+        """BR-99 (revised 2026-09-13) — every name is printed by its source; none is generated.
+
+        The rule used to be "ko/en only", checked as `kinds <= {"ko", "en"}`.
+        It now admits names an MSDS document prints, and the check is stronger
+        for it: a name that is not `ko`/`en` must name the document it came
+        from, and that document's extracted text (the `normalize()` output every
+        offset points into) must contain it verbatim. A string made by removing
+        spaces or hyphens, or by joining lines, fails the second half.
+        """
+        from app.db.models import ExtractedTextRow
+        from app.processing.stages.normalize import normalize
+
         with session_scope() as session:
-            kinds = {
-                row[0]
-                for row in session.execute(
-                    select(SubstanceSynonym.term_type).distinct()
+            rows = session.execute(
+                select(
+                    SubstanceSynonym.term,
+                    SubstanceSynonym.term_type,
+                    SubstanceSynonym.source_document_id,
+                    ExtractedTextRow.text,
+                ).outerjoin(
+                    ExtractedTextRow,
+                    ExtractedTextRow.document_id == SubstanceSynonym.source_document_id,
+                )
+            ).all()
+        assert rows
+
+        projected = [r for r in rows if r.term_type in {"ko", "en"}]
+        printed = [r for r in rows if r.term_type not in {"ko", "en"}]
+        # ko/en mirror the substance row, which owns them (migration 0008).
+        assert all(r.source_document_id is None for r in projected)
+
+        orphans = [r.term for r in printed if r.source_document_id is None]
+        assert not orphans, f"names with no source document: {orphans}"
+        generated = [
+            (r.term, r.source_document_id)
+            for r in printed
+            if r.text is None or normalize(r.term) not in r.text
+        ]
+        assert not generated, f"names their source document does not print: {generated}"
+
+    def test_reindexing_one_msds_leaves_the_other_msds_names(self):
+        """Ownership by document, against the real table (rolled back).
+
+        황산 has two MSDS documents. Clearing one document's rows - what a
+        re-index does before writing - must leave the other document's rows.
+        """
+        from app.substances import msds_synonyms
+
+        with session_scope() as session:
+            owners = session.execute(
+                select(SubstanceSynonym.source_document_id, func.count())
+                .where(SubstanceSynonym.source_document_id.isnot(None))
+                .group_by(SubstanceSynonym.source_document_id)
+                .order_by(SubstanceSynonym.source_document_id)
+            ).all()
+            if len(owners) < 2:
+                pytest.skip("fewer than two MSDS documents own names - re-index MSDS first")
+            (cleared, _), *rest = owners
+            msds_synonyms.register(SubstanceRepo(session), cleared, None, [], {})
+            after = dict(
+                session.execute(
+                    select(SubstanceSynonym.source_document_id, func.count())
+                    .where(SubstanceSynonym.source_document_id.isnot(None))
+                    .group_by(SubstanceSynonym.source_document_id)
                 ).all()
-            }
-        assert kinds <= {"ko", "en"}, f"unexpected synonym types: {kinds}"
+            )
+            session.rollback()
+        assert cleared not in after
+        assert after == dict(rest)
+
+    def test_an_ambiguous_document_owned_name_does_not_resolve(self):
+        """BR-73a - a name another substance's name contains resolves to neither.
+
+        Written and rolled back: a document-owned row equal to another
+        substance's `name_ko`. The query side must keep answering with the
+        substance whose own name it is, and never with the second one.
+        """
+        from app.db.models import Document, Substance
+        from app.rag.entities import EntityExtractor
+        from app.rag.retrieval.retrievers import Retrievers
+
+        with session_scope() as session:
+            owner, victim = session.execute(
+                select(Substance).where(Substance.name_ko.isnot(None)).order_by(Substance.id)
+                .limit(2)
+            ).scalars().all()
+            document_id = session.scalar(select(Document.id).limit(1))
+            session.add(
+                SubstanceSynonym(
+                    substance_id=owner.id,
+                    term=victim.name_ko,
+                    normalized_term=victim.name_ko.lower(),
+                    term_type="common_name",
+                    source_document_id=document_id,
+                )
+            )
+            session.flush()
+            owner_cas, victim_cas = owner.cas_number, victim.cas_number
+            names = EntityExtractor(session).extract(f"{victim.name_ko} 보호구").substance_names
+            cas = Retrievers(session, embedder=None)._cas_for_names(names)
+            session.rollback()
+        assert cas and owner_cas not in cas
+        assert victim_cas in cas
 
     def test_no_source_list_markers_survive(self):
         """The source renders names as "·Isopropylamine"; the dot is markup."""

@@ -24,6 +24,7 @@ from app.core.types import DocType
 from app.db.models import SubstanceSynonym
 from app.rag.assembler import PromptAssembler
 from app.rag.types import QueryIntent
+from app.substances.msds_synonyms import resolvable_synonym
 
 log = get_logger(__name__)
 
@@ -112,9 +113,18 @@ class EntityExtractor:
 
         An unresolved term still goes to keyword search verbatim. Dropping it
         would lose the only thing the user actually named.
+
+        Nothing here picks one substance: every matching row's term is returned
+        and `retrievers._cas_for_names` turns them into CAS numbers. So a name
+        two substances share would resolve to both, and the second one's record
+        chunks would arrive at exact-match rank. A document-owned name another
+        substance's name contains is therefore not resolvable
+        (`msds_synonyms.resolvable_synonym`, BR-73a).
         """
         rows = self._s.execute(
-            select(SubstanceSynonym.normalized_term, SubstanceSynonym.term)
+            select(SubstanceSynonym.normalized_term, SubstanceSynonym.term).where(
+                resolvable_synonym()
+            )
         ).all()
         matched: list[str] = []
         lowered = query.lower()

@@ -134,14 +134,21 @@ class IndexingService:
         # has nothing to match against - it read only `ref.extra`, which the
         # list adapter never fills, so the field was NULL on every chunk (the
         # third face of defect 40). The payload is authoritative; `extra` stays
-        # as a fallback for sources that do carry it there.
+        # as a fallback for sources that do carry it there (the MSDS manifest).
+        #
+        # Every `ref.extra` key read in this module has to survive re-indexing,
+        # so each one is persisted on the document row below and put back by
+        # `_raw_from_original` (`test_reindex_extra_roundtrip` derives the key
+        # list from this file). `un_number` is read from the payload only: no
+        # adapter ever put it in `extra`, and a fallback nobody feeds would be a
+        # key the round trip cannot honour.
         payload = raw.payload or {}
         base_meta = ChunkMeta(
             doc_type=doc_type.value,
             source_url=ref.url,
             published_at=ref.published_at.isoformat() if ref.published_at else None,
             cas_number=payload.get("cas_number") or ref.extra.get("cas_number"),
-            un_number=payload.get("un_number") or ref.extra.get("un_number"),
+            un_number=payload.get("un_number"),
             law_name=ref.extra.get("law_name"),
         )
 
@@ -161,6 +168,9 @@ class IndexingService:
             original_media_type=raw.media_type,
             structure_status=ctx.structured.structure_status,
             law_name=ref.extra.get("law_name"),
+            # The declared CAS, not the payload's: this column exists so the
+            # value that only `extra` carried outlives the collection run.
+            cas_number=ref.extra.get("cas_number"),
             owner_id=owner_id,
         )
         self._documents.set_extracted_text(
@@ -196,6 +206,12 @@ class IndexingService:
         chunk_rows = self._chunks.replace_for_document(
             document, ctx.chunks, section_rows, owner_id=owner_id
         )
+
+        # BR-97/99 (revised 2026-09-13) - the names this MSDS prints for its one
+        # subject, owned by this document. In the indexing path for the reason
+        # BR-97 gives: a separate command (D11's script) is not run by a
+        # re-index from the originals, and the names would silently go.
+        self._register_msds_synonyms(document, doc_type, links, ctx, owner_id)
 
         embedded = False
         if chunk_rows:
@@ -291,7 +307,16 @@ class IndexingService:
             published_at=document.published_at,
             revised_at=document.revised_at,
             content_hash=document.content_hash,
-            extra={"title": document.title, "law_name": document.law_name},
+            # What the adapter put in `extra`, read back from where `process`
+            # stored it - never from the manifest or the substance master. The
+            # manifest is today's file, not what was collected; the master holds
+            # no row for two of the datasheets' CAS numbers and several for a
+            # mixture datasheet, which must come back with none (migration 0009).
+            extra={
+                "title": document.title,
+                "law_name": document.law_name,
+                "cas_number": document.cas_number,
+            },
         )
         # The recorded media type wins over the file extension: it is what the
         # source actually returned. Guessing from the suffix made re-indexing
@@ -311,6 +336,52 @@ class IndexingService:
         from app.substances.projection import project
 
         project(self._substances, raw.payload)
+
+    def _register_msds_synonyms(
+        self,
+        document: Document,
+        doc_type: DocType,
+        links: list[tuple[int, SubstanceRelation]],
+        ctx,
+        owner_id: int | None,
+    ) -> None:
+        """Write the names this document prints, or clear the ones it used to own.
+
+        Only a public MSDS about exactly one substance writes names: a mixture
+        datasheet is the datasheet of none of its constituents, and
+        `substance_synonym` is public, so an owner-scoped document must not
+        publish into it. Anything else clears its rows, which is a no-op for the
+        statutes and records that never had any.
+        """
+        from app.substances import msds_synonyms
+
+        subjects = list(
+            dict.fromkeys(sid for sid, rel in links if rel is SubstanceRelation.SUBJECT)
+        )
+        current = None
+        others: list[msds_synonyms.MsdsDocument] = []
+        base_names: dict[int, list[str]] = {}
+        labels: dict[int, str] = {}
+        if doc_type is DocType.MSDS and owner_id is None and len(subjects) == 1:
+            subject = self._substances.get_by_id(subjects[0])
+            current = msds_synonyms.MsdsDocument(
+                document_id=document.id,
+                title=document.title,
+                substance_id=subjects[0],
+                cas_number=subject.cas_number if subject else None,
+                extracted_text=ctx.extracted.text,
+                chunks=tuple((c.text, c.meta.section_code) for c in ctx.chunks),
+            )
+            others = [
+                msds_synonyms.MsdsDocument(did, title, sid, cas, text, tuple(chunks))
+                for did, title, sid, cas, text, chunks in self._documents.single_subject_msds(
+                    exclude_document_id=document.id
+                )
+            ]
+            base_names, labels = self._substances.projected_names()
+        msds_synonyms.register(
+            self._substances, document.id, current, others, base_names, labels
+        )
 
     def _resolve_substances(
         self, raw, doc_type: DocType, text: str, title: str | None

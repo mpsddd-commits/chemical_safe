@@ -10,7 +10,7 @@ from __future__ import annotations
 from collections.abc import Collection
 from datetime import datetime
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, true
 from sqlalchemy.orm import Session
 
 from app.core.types import PolicyCheckScope, PolicyDecision, SynonymType
@@ -166,8 +166,9 @@ class SubstanceRepo:
         terms: list[tuple[str, str, SynonymType]],
         *,
         owned_types: Collection[SynonymType],
+        source_document_id: int | None,
     ) -> int:
-        """Replace the synonyms of the types this caller produces (BR-98).
+        """Replace the synonyms this caller owns (BR-98).
 
         `add_synonyms` only skips exact duplicates, so a change in how names are
         derived leaves the old rows behind. Measured 2026-08-26: after the source
@@ -178,17 +179,25 @@ class SubstanceRepo:
         Same reasoning as BR-54 for chunks: derived data is replaced, not
         accumulated, or a re-index stops being idempotent.
 
-        **Only `owned_types` are replaced.** The table has more than one
-        producer: the NCIS projection writes `ko`/`en`, and
-        `scripts/backfill_synonyms.py` writes `msds_title`/`common_name`/
-        `formula` (D11). Clearing every type let a re-index silently delete the
-        backfill - one job destroying another job's premise, the same shape as
-        the resume path that destroyed its own precondition (`runner.py`).
+        **A caller owns rows by document and by type, both stated.**
 
-        `owned_types` is keyword-only and has **no default**. A default of "all
-        types" would hand the next caller the same accident; a default of "the
-        projection's types" would make a second producer replace someone else's
-        rows. Saying which rows you own is the price of deleting any.
+        * `source_document_id` - the document that published the names, or None
+          for the substance-owned `ko`/`en` rows the NCIS projection mirrors from
+          `substance.name_ko`/`name_en`. Owning by type alone was right while
+          each type had one producer, and wrong for MSDS names: 황산 has two MSDS
+          documents, and re-indexing one while replacing every `common_name`
+          of the substance would delete what the other one printed (D11
+          follow-up, 2026-09-13). Only rows whose `source_document_id` equals
+          this one are touched - None matches None and nothing else.
+        * `owned_types` - kept alongside the document. The NULL owner is shared
+          by every substance-owned type (`ko`/`en` today, `cas`/`un` if they
+          are ever filled), and a document may one day carry a second producer;
+          the type set is what stops either from replacing the other's rows.
+
+        Both are keyword-only and have **no default**. A default document of
+        None would let an MSDS caller that forgot it replace the projection's
+        rows; a default type set would hand the next caller someone else's rows.
+        Saying which rows you own is the price of deleting any.
         """
         owned = frozenset(owned_types)
         if not owned:
@@ -205,30 +214,104 @@ class SubstanceRepo:
         # removes the rows; deleting the objects individually left them in the
         # collection, and the append that followed was wiped along with them -
         # measured, the table went to 0 rows instead of 80.
-        for row in [s for s in substance.synonyms if s.term_type in owned_values]:
+        for row in [
+            s
+            for s in substance.synonyms
+            if s.term_type in owned_values and s.source_document_id == source_document_id
+        ]:
             substance.synonyms.remove(row)
         self._s.flush()
-        return self.add_synonyms(substance, terms)
+        return self.add_synonyms(substance, terms, source_document_id=source_document_id)
+
+    def replace_document_synonyms(
+        self,
+        document_id: int,
+        entries: list[tuple[Substance, list[tuple[str, str, SynonymType]]]],
+        *,
+        owned_types: Collection[SynonymType],
+    ) -> int:
+        """Replace every row `document_id` owns, across substances.
+
+        `replace_synonyms` works on one substance's collection. A document whose
+        subject changed, or that stopped being a single-subject MSDS, still owns
+        rows on the substance it used to name; those go too, or they would
+        outlive the evidence for them. An empty `entries` clears the document.
+        """
+        owned = frozenset(owned_types)
+        if not owned:
+            raise ValueError("owned_types must name at least one SynonymType")
+        keep = {substance.id for substance, _terms in entries}
+        stale = self._s.scalars(
+            select(SubstanceSynonym).where(
+                SubstanceSynonym.source_document_id == document_id,
+                SubstanceSynonym.term_type.in_(sorted(kind.value for kind in owned)),
+                SubstanceSynonym.substance_id.not_in(keep) if keep else true(),
+            )
+        ).all()
+        for row in stale:
+            row.substance.synonyms.remove(row)
+        self._s.flush()
+        added = 0
+        for substance, terms in entries:
+            added += self.replace_synonyms(
+                substance, terms, owned_types=owned, source_document_id=document_id
+            )
+        return added
 
     def add_synonyms(
-        self, substance: Substance, terms: list[tuple[str, str, SynonymType]]
+        self,
+        substance: Substance,
+        terms: list[tuple[str, str, SynonymType]],
+        *,
+        source_document_id: int | None,
     ) -> int:
-        """``terms`` is (raw term, normalized term, type). Duplicates are skipped."""
+        """``terms`` is (raw term, normalized term, type). Duplicates are skipped.
+
+        A duplicate is the same name, type and owner. The same name from two
+        documents is two rows: each is evidence the other cannot vouch for.
+        """
         seen = {
-            (s.normalized_term, s.term_type) for s in substance.synonyms
+            (s.normalized_term, s.term_type, s.source_document_id) for s in substance.synonyms
         }
         added = 0
         for raw, normalized, kind in terms:
-            key = (normalized, kind.value)
+            key = (normalized, kind.value, source_document_id)
             if not normalized or key in seen:
                 continue
             substance.synonyms.append(
-                SubstanceSynonym(term=raw, normalized_term=normalized, term_type=kind.value)
+                SubstanceSynonym(
+                    term=raw,
+                    normalized_term=normalized,
+                    term_type=kind.value,
+                    source_document_id=source_document_id,
+                )
             )
             seen.add(key)
             added += 1
         self._s.flush()
         return added
+
+    def projected_names(self) -> tuple[dict[int, list[str]], dict[int, str]]:
+        """Every substance's ko/en synonym terms, and a label per substance.
+
+        What MSDS name screening compares against: a name equal to or inside a
+        substance's own name adds nothing, and one inside another substance's
+        name resolves to the wrong one (`app/substances/msds_synonyms.py`).
+        """
+        labels: dict[int, str] = {}
+        names: dict[int, list[str]] = {}
+        for sid, ko, en in self._s.execute(
+            select(Substance.id, Substance.name_ko, Substance.name_en).order_by(Substance.id)
+        ).all():
+            labels[sid] = ko or en or str(sid)
+            names[sid] = []
+        for sid, term in self._s.execute(
+            select(SubstanceSynonym.substance_id, SubstanceSynonym.term).where(
+                SubstanceSynonym.term_type.in_([SynonymType.KO.value, SynonymType.EN.value])
+            )
+        ).all():
+            names.setdefault(sid, []).append(term)
+        return names, labels
 
     def count(self) -> int:
         return self._s.scalar(select(func.count()).select_from(Substance)) or 0

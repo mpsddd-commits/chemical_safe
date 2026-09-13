@@ -23,6 +23,7 @@ class FakeRepo:
         self.synonyms: list[tuple] = []
         self.replaced: list[tuple] = []
         self.owned: list[frozenset] = []
+        self.owners: list[int | None] = []
         self._by_cas: dict[str, object] = {}
 
     def upsert(self, *, cas_number=None, **fields):
@@ -32,13 +33,14 @@ class FakeRepo:
         row = self._by_cas.setdefault(cas_number or str(len(self.upserts)), object())
         return row
 
-    def add_synonyms(self, substance, terms):
+    def add_synonyms(self, substance, terms, *, source_document_id):
         self.synonyms.append((substance, terms))
         return len(terms)
 
-    def replace_synonyms(self, substance, terms, *, owned_types):
+    def replace_synonyms(self, substance, terms, *, owned_types, source_document_id):
         self.replaced.append((substance, terms))
         self.owned.append(frozenset(owned_types))
+        self.owners.append(source_document_id)
         return len(terms)
 
 

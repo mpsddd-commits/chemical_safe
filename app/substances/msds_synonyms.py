@@ -1,79 +1,80 @@
-"""Fill `substance_synonym` with names our own MSDS documents publish (backlog D11).
+"""Names an MSDS document prints for its substance - BR-97, BR-99 (revised 2026-09-13).
 
-Measured 2026-09-10: 49 substances, 98 rows, exactly one `ko` and one `en` each.
-Not one real synonym. 황산 is held (two MSDS plus a record) and `H2SO4 저장법`
-still resolves to nothing, because `entities._match_synonyms` can only match a
-string the table holds.
+Backlog D11 measured `substance_synonym` at 49 substances, 98 rows, exactly one
+`ko` and one `en` each - not one real synonym - so `H2SO4 저장법` resolved to
+nothing although 황산 is held. D11 filled the gap with a separate script, and
+that broke BR-97: restoring the corpus by re-indexing from the originals (the
+README's promise) would not run the script and the names would silently go -
+defect 40's shape. So the extraction lives here and runs **inside the indexing
+path**: when an MSDS document is indexed, the names it prints for its one
+subject substance are written, owned by that document.
 
-**It invents nothing.** Every term this script writes is a string that appears
-in a document linked to that substance (`document_substance.relation =
-'subject'`). General knowledge is not evidence: "메탄올 = 메틸알코올" goes in
-because Methanex's MSDS prints it, not because it is true.
+**It invents nothing (BR-99).** Every name is a string the document prints:
 
-Three sources, one `term_type` each, so "where did this synonym come from" has
-an answer after the fact:
-
-  * `msds_title`  - the name in the MSDS document title (`X (Y) - 회사`), and
-                    only when that name also appears in the document body. The
-                    title is written in `config/msds_manifest.json`; the body is
-                    what the supplier published.
+  * `msds_title`  - the name in the document title (`X (Y) - 회사`), only when
+                    the body prints it too. The title is ours (the manifest);
+                    the body is the supplier's.
   * `common_name` - the value of a `관용명 및 이명` / `이명(관용명)` / `동의어`
-                    label in **section 3** (구성성분의 명칭 및 함유량), and only
-                    when the CAS number that follows the label is this
-                    substance's. Section 3 ties a name to a CAS row; section 1's
-                    free "동의어/상품명" list does not, and koreachem's lists
-                    다이싸이온산 (dithionic acid, a different compound) as a
-                    synonym of 황산. So section 1 lists are not read.
-  * `formula`     - the value of a `분자식` / `화학식` label, hyphens removed,
-                    and only when that exact string also appears verbatim in the
-                    same document. A string we produced by removing hyphens is
-                    not published; the verbatim occurrence is.
+                    label in **section 3**, only on the row carrying this
+                    substance's CAS number. Section 1's free lists are not read:
+                    koreachem lists 다이싸이온산 (dithionic acid, a different
+                    compound) as a synonym of 황산.
+  * `formula`     - the value of a `분자식` / `화학식` label with hyphens
+                    removed, only when that exact string also appears verbatim.
+
+and one gate over all three: the name must appear **verbatim in the extracted
+text** (`normalize()` output, the text every offset points into). A list that
+wraps mid-name ("Cyclohexyl\\nmethacrylate") is split by joining the lines, and
+a fragment that only exists because of that join is a string we made - it is
+rejected at the value it was cut from, even when the same spelling happens to
+be printed somewhere else in the document.
 
 **It is conservative.** The table is matched by substring
 (`normalized_term in query`), so a wrong synonym resolves a question to the
 wrong substance - one substance's toxicity attached to another (BR-73a). A
-candidate is dropped when it is ambiguous (equal to, or contained in, a term of
-a different substance), too short, a generic noun, a company name, a fragment of
-an inverted CAS-index name, or contained in / containing the substance's own
-existing name (the shorter name is a broader one - `Butylamine` is printed as a
-synonym of tert-Butylamine and names a different compound; the longer one adds
-nothing a substring match does not already find), or named in `EXCLUDED_TERMS`
-(a misprint in the source). Every drop is printed with its reason.
+candidate is dropped when it is ambiguous (equal to, or contained in, a name of
+a different substance, or any name another single-subject MSDS document offers
+for a different substance, accepted or not), too short, a generic noun, a
+company name, a fragment of an inverted CAS-index name, contained in or
+containing the substance's own name (`Butylamine` is printed for
+tert-Butylamine and names a different compound), or listed in
+`EXCLUDED_TERMS`. Every drop is logged with its reason.
 
-**It is idempotent.** Rows go in with `ON CONFLICT ON CONSTRAINT uq_synonym_term
-DO NOTHING`, and a term the substance already carries is reported, not written.
-
-`normalized_term` is built by `projection._normalize_term`, the function the
-collection path uses for the existing rows - one owner for the rule, or a row
-this script writes would not match the way the others do.
-
-Dry run is the default. Run it from the host (the container has no `scripts/`):
-
-    set -a; . ./.env; set +a
-    PYTHONIOENCODING=utf-8 POSTGRES_HOST=127.0.0.1 POSTGRES_PORT=5433 \
-        python scripts/backfill_synonyms.py            # print candidates only
-    ...                                  python scripts/backfill_synonyms.py --apply
+Ambiguity is judged against every single-subject MSDS document in the corpus,
+not only the one being indexed, so re-indexing any one document reaches the
+same verdict as screening all of them together. A document collected later can
+still make an earlier document's name ambiguous; the earlier row stays until
+that document is re-indexed, and the query side refuses to resolve a
+document-owned name that another substance's name contains in the meantime
+(`app/rag/entities.py`).
 """
 
 from __future__ import annotations
 
-import argparse
 import re
-import sys
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
-from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from sqlalchemy import exists, func, or_
+from sqlalchemy.orm import aliased
 
-from app.core.types import SynonymType  # noqa: E402
-from app.substances.projection import _normalize_term  # noqa: E402
+from app.core.logging import get_logger
+from app.core.types import SynonymType
+from app.db.models import SubstanceSynonym
+from app.processing.stages.normalize import normalize
+from app.substances.projection import _normalize_term
+
+log = get_logger(__name__)
 
 # The enum owns the values; `SubstanceLookup` reads every row through it.
 MSDS_TITLE = SynonymType.MSDS_TITLE.value
 COMMON_NAME = SynonymType.COMMON_NAME.value
 FORMULA = SynonymType.FORMULA.value
-BACKFILL_TYPES = (COMMON_NAME, FORMULA, MSDS_TITLE)  # also the keep-one priority
+MSDS_TYPES = (COMMON_NAME, FORMULA, MSDS_TITLE)  # also the keep-one priority
+
+# What an MSDS document owns in `substance_synonym`, and so the only types its
+# re-index replaces. Disjoint from the projection's ko/en by a test.
+MSDS_SYNONYM_TYPES: frozenset[SynonymType] = frozenset(SynonymType(t) for t in MSDS_TYPES)
 
 # Section 3 is where a name sits in the same row as its CAS number.
 COMPOSITION_SECTION = "msds_03"
@@ -95,11 +96,15 @@ GENERIC_NOUNS = frozenset(
 # is a list, not a typo detector - a detector would guess, and a guess that drops
 # a real name is as wrong as one that keeps a typo. Keyed by normalized term
 # (what `Candidate.normalized` yields), because a misspelling is not a name of
-# any substance. Checked first, so a rerun cannot bring the row back.
+# any substance. Checked first, so a re-index cannot bring the row back.
 EXCLUDED_TERMS: Mapping[str, str] = {
     # doc 729 "폼아마이드 (Formamide) - 대정화금", msds_03 관용명·이명.
     "formanfide": "원문 오타 (Formamide 의 오기)",
 }
+
+# BR-99 (revised): the gate every accepted name passes.
+NOT_PRINTED = "추출문에 그 표기가 그대로 없음 (지어낸 문자열, BR-99)"
+JOINED = "줄바꿈을 넘어 이어 붙인 문자열 (원문 값에 그대로 없음, BR-99)"
 
 _COMPANY_MARKERS = re.compile(
     r"㈜|\(주\)|주식회사|co\.|ltd|inc\.|corp|chemicals&metals|page\d", re.IGNORECASE
@@ -134,9 +139,26 @@ def compact(term: str) -> str:
     return re.sub(r"\s+", "", term).casefold()
 
 
+@dataclass(frozen=True)
+class MsdsDocument:
+    """What extraction reads from one single-subject MSDS document.
+
+    Built from the pipeline context for the document being indexed and from the
+    stored rows for every other one, so both are read the same way.
+    """
+
+    document_id: int
+    title: str | None
+    substance_id: int
+    cas_number: str | None
+    extracted_text: str
+    chunks: tuple[tuple[str, str | None], ...]  # (text, section_code), in order
+
+
 @dataclass
 class Candidate:
     substance_id: int
+    document_id: int
     term: str
     term_type: str
     evidence: list[str] = field(default_factory=list)
@@ -228,6 +250,9 @@ def split_value(value: str, glued_end: bool = False) -> list[tuple[str, str | No
 
     `glued_end` - the next field's label follows with no whitespace
     ("2,2-dimethoxyCAS 번호"), so the last name may have lost its end.
+
+    A fragment that exists only because lines were joined is rejected here
+    (`JOINED`): the join is how a wrapped list is read, not a name anyone printed.
     """
     value = value.strip()
     if not value:
@@ -259,7 +284,8 @@ def split_value(value: str, glued_end: bool = False) -> list[tuple[str, str | No
         if not _balanced(fragment):
             out.append((fragment, "잘린 조각 (괄호 짝 안 맞음)"))
             continue
-        out.extend((name, None) for name in _split_gloss(fragment))
+        for name in _split_gloss(fragment):
+            out.append((name, None if name in value else JOINED))
     return out
 
 
@@ -318,6 +344,83 @@ def appears_verbatim(term: str, text: str) -> bool:
     return re.search(pattern, text) is not None
 
 
+def printed_in(term: str, extracted_text: str) -> bool:
+    """BR-99 (revised) as a test: the name, normalized, is in the extracted text.
+
+    Case and spacing included. `extracted_text` is already `normalize()` output,
+    so normalizing the term is the only step; lowering either side would accept
+    a spelling the document does not print.
+    """
+    needle = normalize(term)
+    return bool(needle) and needle in extracted_text
+
+
+def extract(document: MsdsDocument) -> tuple[list[Candidate], str | None]:
+    """Every candidate the document offers, each accepted or with its reason.
+
+    Returns the candidates and the company named in the title, which screening
+    uses to drop company names printed as if they were synonyms.
+    """
+    sid, did = document.substance_id, document.document_id
+    chunks = document.chunks
+    candidates: list[Candidate] = []
+    company: str | None = None
+
+    if document.title:
+        names, company = title_names(document.title)
+        for name in names:
+            cand = Candidate(
+                sid,
+                did,
+                name,
+                MSDS_TITLE,
+                [f"doc {did} 제목 '{document.title}'"],
+                pair=f"title:{did}" if len(names) == 2 else None,
+            )
+            norm = _normalize_term(name)
+            printed = [i for i, (t, _) in enumerate(chunks) if norm in _normalize_term(t)]
+            if printed:
+                cand.evidence.append(f"doc {did} chunk #{printed[0]} (본문 표기)")
+            else:
+                cand.reason = "제목에만 있고 본문에 그 표기가 없음"
+            candidates.append(cand)
+
+    cas = document.cas_number
+    for index, (text, section) in enumerate(chunks):
+        where = f"doc {did} chunk #{index} ({section}"
+        if cas and section == COMPOSITION_SECTION:
+            for value, row_reason, glued in labeled_values(text, cas):
+                if row_reason:
+                    shown = re.sub(r"\s+", " ", value)
+                    shown = shown if len(shown) <= 60 else shown[:57] + "..."
+                    candidates.append(
+                        Candidate(sid, did, shown, COMMON_NAME, [f"{where} 관용명·이명)"],
+                                  row_reason)
+                    )
+                    continue
+                pairs = gloss_pairs(value)
+                for fragment, reason in split_value(value, glued):
+                    pair = pairs.get(fragment)
+                    key = f"{did}:{index}:{pair}" if pair else None
+                    candidates.append(
+                        Candidate(sid, did, fragment, COMMON_NAME, [f"{where} 관용명·이명)"],
+                                  reason, key)
+                    )
+        for formula in formula_values(text):
+            cand = Candidate(sid, did, formula, FORMULA, [f"{where} 분자식)"])
+            verbatim = [i for i, (t, _) in enumerate(chunks) if appears_verbatim(formula, t)]
+            if verbatim:
+                cand.evidence.append(f"doc {did} chunk #{verbatim[0]} (그대로 표기)")
+            else:
+                cand.reason = "하이픈을 뺀 형태가 문서에 그대로 나오지 않음 (지어낸 표기)"
+            candidates.append(cand)
+
+    for cand in candidates:
+        if cand.reason is None and not printed_in(cand.term, document.extracted_text):
+            cand.reason = NOT_PRINTED
+    return candidates, company
+
+
 # --------------------------------------------------------------------------- #
 # screening - candidates in, each marked accepted or with its reason
 # --------------------------------------------------------------------------- #
@@ -331,9 +434,10 @@ def screen(
 ) -> list[Candidate]:
     """Mark each candidate. `base_names` is substance id -> its existing ko/en terms.
 
-    Returns one candidate per (substance, normalized term): the first accepted
-    one by `BACKFILL_TYPES` priority, with every source's evidence merged, so
-    the same name does not go in twice under two types.
+    Returns one candidate per (document, substance, normalized term): the first
+    accepted one by `MSDS_TYPES` priority, with that document's evidence merged,
+    so the same name does not go in twice under two types. Two documents that
+    print the same name each keep theirs - each is the owner of its row.
     """
     labels = labels or {}
     company_keys = {compact(c) for c in companies if compact(c)}
@@ -358,11 +462,11 @@ def screen(
         elif _COMPANY_MARKERS.search(key) or any(c in key for c in company_keys):
             cand.reason = "회사명"
 
-    # Merge per (substance, normalized), keeping priority order.
-    priority = {t: i for i, t in enumerate(BACKFILL_TYPES)}
-    merged: dict[tuple[int, str], Candidate] = {}
+    # Merge per (document, substance, normalized), keeping priority order.
+    priority = {t: i for i, t in enumerate(MSDS_TYPES)}
+    merged: dict[tuple[int, int, str], Candidate] = {}
     for cand in sorted(candidates, key=lambda c: (c.reason is not None, priority[c.term_type])):
-        slot = (cand.substance_id, cand.normalized)
+        slot = (cand.document_id, cand.substance_id, cand.normalized)
         if slot in merged:
             kept = merged[slot]
             kept.evidence.extend(e for e in cand.evidence if e not in kept.evidence)
@@ -420,188 +524,99 @@ def screen(
     return result
 
 
-# --------------------------------------------------------------------------- #
-# database
-# --------------------------------------------------------------------------- #
+def names_for(
+    document: MsdsDocument,
+    others: Iterable[MsdsDocument],
+    base_names: Mapping[int, Iterable[str]],
+    labels: Mapping[int, str] | None = None,
+) -> list[Candidate]:
+    """The verdict on every candidate `document` offers, judged against the corpus.
 
-
-def collect(session) -> tuple[list[Candidate], dict[int, list[str]], dict[int, str], set[str]]:
-    from sqlalchemy import text as sql
-
-    substances = session.execute(
-        sql("SELECT id, name_ko, name_en, cas_number FROM substance ORDER BY id")
-    ).all()
-    labels = {sid: (ko or en or str(sid)) for sid, ko, en, _ in substances}
-    cas_of = {sid: cas for sid, _, _, cas in substances}
-    base: dict[int, list[str]] = {sid: [] for sid, *_ in substances}
-    for sid, term in session.execute(
-        sql("SELECT substance_id, term FROM substance_synonym WHERE term_type IN ('ko', 'en')")
-    ).all():
-        base[sid].append(term)
-
-    # One subject, and the document is an MSDS: a mixture MSDS that merely
-    # mentions a substance is not that substance's document.
-    docs = session.execute(
-        sql(
-            """
-            SELECT d.id, d.title, min(ds.substance_id)
-              FROM document d
-              JOIN document_substance ds ON ds.document_id = d.id AND ds.relation = 'subject'
-             WHERE d.doc_type = 'msds'
-             GROUP BY d.id, d.title
-            HAVING count(DISTINCT ds.substance_id) = 1
-             ORDER BY d.id
-            """
-        )
-    ).all()
-
+    `others` are the other single-subject MSDS documents. Their candidates take
+    part in screening as claims - ambiguity and company names - and are then
+    dropped from the result: `document` only ever writes its own rows.
+    """
     candidates: list[Candidate] = []
     companies: set[str] = set()
-    for document_id, title, sid in docs:
-        chunks = session.execute(
-            sql(
-                """
-                SELECT c.id, c.text, s.section_code
-                  FROM chunk c LEFT JOIN document_section s ON s.id = c.section_id
-                 WHERE c.document_id = :d ORDER BY c.ordinal
-                """
-            ),
-            {"d": document_id},
-        ).all()
-
-        if title:
-            names, company = title_names(title)
-            if company:
-                companies.add(company)
-                companies.add(company.split()[0])
-            for name in names:
-                cand = Candidate(
-                    sid,
-                    name,
-                    MSDS_TITLE,
-                    [f"doc {document_id} 제목 '{title}'"],
-                    pair=f"title:{document_id}" if len(names) == 2 else None,
-                )
-                # Verbatim, spacing included: the title is ours (the manifest),
-                # the body is the supplier's. "메틸에틸케톤" counts only because
-                # section 14 prints it; "메틸 에틸 케톤" elsewhere would not.
-                norm = _normalize_term(name)
-                printed = [cid for cid, t, _ in chunks if norm in _normalize_term(t)]
-                if printed:
-                    cand.evidence.append(f"doc {document_id} chunk {printed[0]} (본문 표기)")
-                else:
-                    cand.reason = "제목에만 있고 본문에 그 표기가 없음"
-                candidates.append(cand)
-
-        cas = cas_of.get(sid)
-        for chunk_id, text, section in chunks:
-            if cas and section == COMPOSITION_SECTION:
-                for value, row_reason, glued in labeled_values(text, cas):
-                    where = f"doc {document_id} chunk {chunk_id} ({section} 관용명·이명)"
-                    if row_reason:
-                        shown = re.sub(r"\s+", " ", value)
-                        shown = shown if len(shown) <= 60 else shown[:57] + "..."
-                        candidates.append(Candidate(sid, shown, COMMON_NAME, [where], row_reason))
-                        continue
-                    pairs = gloss_pairs(value)
-                    for fragment, reason in split_value(value, glued):
-                        pair = pairs.get(fragment)
-                        key = f"{chunk_id}:{pair}" if pair else None
-                        candidates.append(
-                            Candidate(sid, fragment, COMMON_NAME, [where], reason, key)
-                        )
-            for formula in formula_values(text):
-                where = f"doc {document_id} chunk {chunk_id} ({section} 분자식)"
-                cand = Candidate(sid, formula, FORMULA, [where])
-                verbatim = [cid for cid, t, _ in chunks if appears_verbatim(formula, t)]
-                if verbatim:
-                    cand.evidence.append(f"doc {document_id} chunk {verbatim[0]} (그대로 표기)")
-                else:
-                    cand.reason = "하이픈을 뺀 형태가 문서에 그대로 나오지 않음 (지어낸 표기)"
-                candidates.append(cand)
-    return candidates, base, labels, companies
+    for doc in (document, *others):
+        found, company = extract(doc)
+        candidates.extend(found)
+        if company:
+            companies.add(company)
+            companies.add(company.split()[0])
+    result = screen(candidates, base_names, companies, labels)
+    return [c for c in result if c.document_id == document.document_id]
 
 
-def plan_inserts(
-    result: Iterable[Candidate], existing: set[tuple[int, str]]
-) -> list[Candidate]:
-    """Accepted candidates the table does not already hold, by (substance, normalized).
-
-    Keyed without `term_type`, deliberately wider than `uq_synonym_term`: the
-    same name under a second type would be a second row matching the same way.
-    """
+def synonym_terms(accepted: Iterable[Candidate]) -> list[tuple[str, str, SynonymType]]:
+    """Accepted candidates in the repository's `(raw, normalized, type)` shape."""
     return [
-        c for c in result
-        if c.reason is None and (c.substance_id, c.normalized) not in existing
+        (c.term, c.normalized, SynonymType(c.term_type)) for c in accepted if c.reason is None
     ]
 
 
-def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
-    mode = parser.add_mutually_exclusive_group()
-    mode.add_argument("--dry-run", action="store_true", help="print candidates (default)")
-    mode.add_argument("--apply", action="store_true", help="insert the accepted candidates")
-    args = parser.parse_args(argv)
+def register(
+    repo,
+    document_id: int,
+    document: MsdsDocument | None,
+    others: Iterable[MsdsDocument],
+    base_names: Mapping[int, Iterable[str]],
+    labels: Mapping[int, str] | None = None,
+) -> int:
+    """BR-97/99 - replace the rows `document_id` owns with what it prints now.
 
-    from sqlalchemy import text as sql
+    `document` is None when the document is not a single-subject MSDS (any
+    more): its rows are cleared, because nothing it prints is evidence for a
+    substance it is not the datasheet of. Returns the number of rows written.
+    """
+    if document is None:
+        repo.replace_document_synonyms(document_id, [], owned_types=MSDS_SYNONYM_TYPES)
+        return 0
 
-    from app.core.config import get_settings
-    from app.db.engine import init_engine, session_scope
-
-    init_engine(get_settings())
-    with session_scope() as session:
-        raw, base, labels, companies = collect(session)
-        result = screen(raw, base, companies, labels)
-        existing = {
-            (sid, norm)
-            for sid, norm in session.execute(
-                sql("SELECT substance_id, normalized_term FROM substance_synonym")
-            ).all()
-        }
-
-        to_insert = {id(c) for c in plan_inserts(result, existing)}
-        accepted = sum(1 for c in result if c.reason is None)
-        present = accepted - len(to_insert)
-        inserted = 0
-        by_substance: dict[int, list[Candidate]] = {}
-        for cand in result:
-            by_substance.setdefault(cand.substance_id, []).append(cand)
-
-        print("물질 | 후보 | term_type | 근거 | 판정")
-        for sid in sorted(by_substance, key=lambda s: labels.get(s, "")):
-            for cand in sorted(by_substance[sid], key=lambda c: (c.reason is not None, c.term)):
-                verdict = cand.reason or "채택"
-                if cand.reason is None and id(cand) not in to_insert:
-                    verdict = "채택 (이미 있음)"
-                elif cand.reason is None and args.apply:
-                    row = session.execute(
-                        sql(
-                            """
-                            INSERT INTO substance_synonym
-                                   (substance_id, term, normalized_term, term_type)
-                            VALUES (:sid, :term, :norm, :type)
-                            ON CONFLICT ON CONSTRAINT uq_synonym_term DO NOTHING
-                            RETURNING id
-                            """
-                        ),
-                        {"sid": sid, "term": cand.term, "norm": cand.normalized,
-                         "type": cand.term_type},
-                    ).first()
-                    inserted += 1 if row else 0
-                    verdict = "채택 (넣음)" if row else "채택 (이미 있음)"
-                print(
-                    f"{labels.get(sid, sid)} | {cand.term} | {cand.term_type} | "
-                    f"{'; '.join(cand.evidence)} | {verdict}"
-                )
-
-    excluded = len(result) - accepted
-    verb = "넣음" if args.apply else "넣을 대상(dry-run)"
-    print(
-        f"\n후보 {len(result)}건 · 채택 {accepted}건 · 제외 {excluded}건 · "
-        f"이미 있음 {present}건 · {verb} {inserted if args.apply else len(to_insert)}건"
+    verdicts = names_for(document, others, base_names, labels)
+    terms = synonym_terms(verdicts)
+    substance = repo.get_by_id(document.substance_id)
+    written = repo.replace_document_synonyms(
+        document_id, [(substance, terms)] if substance else [], owned_types=MSDS_SYNONYM_TYPES
     )
-    return 0
+    log.info(
+        "msds_synonyms_registered",
+        extra={
+            "document_id": document_id,
+            "substance_id": document.substance_id,
+            "accepted": [t for t, _n, _k in terms],
+            "rejected": {c.term: c.reason for c in verdicts if c.reason},
+        },
+    )
+    return written
 
 
-if __name__ == "__main__":
-    raise SystemExit(main())
+# --------------------------------------------------------------------------- #
+# reading - the same ambiguity rule, where a name becomes a substance
+# --------------------------------------------------------------------------- #
+
+
+def resolvable_synonym():
+    """SQL filter: rows a question may resolve through (BR-73a).
+
+    Every `ko`/`en` row, and a document-owned row only while no row of a
+    **different** substance contains it (equal included). Screening applies the
+    same test when the row is written, but only against what the corpus holds
+    at that moment: a substance record or MSDS collected later can make an
+    earlier document's name ambiguous, and that row stays until its document is
+    re-indexed. Resolving through it in the meantime would pull the other
+    substance's record chunks in at exact-match rank and past the
+    `unknown_subject` refusal - one substance's data answering for another.
+
+    The `ko`/`en` rows are left as they are: they are the substance's own
+    names, and how they overlap (`ethyl silicate` inside `tetramethyl
+    silicate`) predates document-owned names and is not changed here.
+    """
+    other = aliased(SubstanceSynonym)
+    return or_(
+        SubstanceSynonym.source_document_id.is_(None),
+        ~exists().where(
+            other.substance_id != SubstanceSynonym.substance_id,
+            func.strpos(other.normalized_term, SubstanceSynonym.normalized_term) > 0,
+        ),
+    )

@@ -178,7 +178,7 @@ class TestReindexIsNotGuarded:
             id=1, doc_type="msds", source_id=None, source=None, owner_id=None,
             external_id="doc-1", source_url="https://example.test/doc",
             published_at=None, revised_at=None, content_hash=None, title="시험 문서",
-            law_name=None, original_path=str(original),
+            law_name=None, cas_number=None, original_path=str(original),
             original_media_type="application/json",
         )
         service._documents = SimpleNamespace(get=lambda _id: document)

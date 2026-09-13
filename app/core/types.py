@@ -103,8 +103,10 @@ class SynonymType(StrEnum):
     ALIAS = "alias"
     CAS = "cas"
     UN = "un"
-    # Backlog D11 - names our own MSDS documents print, written by
-    # `scripts/backfill_synonyms.py`. The value says where the name came from,
+    # Backlog D11 - names our own MSDS documents print, written in the indexing
+    # path by `app/substances/msds_synonyms.py` (BR-97/99 revised 2026-09-13),
+    # each row owned by the document that prints it (`source_document_id`).
+    # The value says which part of that document the name came from,
     # so "why does this synonym exist" has an answer. They live here because
     # `SubstanceLookup` reads every row through this enum: a value missing from
     # it raises on the first lookup that matches the row.

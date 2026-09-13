@@ -35,9 +35,18 @@ log = get_logger(__name__)
 # The synonym types this projection produces, and therefore the only ones it may
 # replace (BR-98). `synonym_terms()` below is held to this set by a test, so a
 # new type derived here cannot slip past the replacement and accumulate. Rows of
-# any other type belong to another producer - the D11 backfill - and a re-index
-# must leave them alone.
+# any other type belong to another producer - the names MSDS documents print,
+# written per document by `msds_synonyms` (BR-99 revised) - and a re-index of a
+# substance record must leave them alone.
 PROJECTED_SYNONYM_TYPES: frozenset[SynonymType] = frozenset({SynonymType.KO, SynonymType.EN})
+
+# The owner the projection writes under. These rows mirror `substance.name_ko`
+# and `name_en`, and the owner of that fact is the substance row, upserted by CAS
+# (BR-98) and outliving any one record document. Recording the record document
+# would make its deletion cascade into the names of a substance that still
+# exists. None is stated here once rather than defaulted in the repository, where
+# an MSDS caller that forgot its document would silently get it.
+PROJECTED_SOURCE_DOCUMENT: None = None
 
 
 @dataclass(frozen=True)
@@ -141,8 +150,13 @@ def project(repo, payload: dict | None):
     if terms:
         # Replace, not append (BR-98). Appending let a change in name handling
         # leave the previous spelling behind as a live lookup key. Only this
-        # projection's own types: the backfill's rows are not ours to delete.
-        repo.replace_synonyms(substance, terms, owned_types=PROJECTED_SYNONYM_TYPES)
+        # projection's own rows: the names MSDS documents printed are theirs.
+        repo.replace_synonyms(
+            substance,
+            terms,
+            owned_types=PROJECTED_SYNONYM_TYPES,
+            source_document_id=PROJECTED_SOURCE_DOCUMENT,
+        )
     log.info(
         "substance_projected",
         extra={"cas_number": facts.cas_number, "synonyms": len(terms)},

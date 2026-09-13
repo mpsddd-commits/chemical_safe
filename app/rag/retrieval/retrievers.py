@@ -25,6 +25,7 @@ from app.db.models import ChunkRow, Substance, SubstanceSynonym
 from app.indexing.keyword_index import KeywordIndex
 from app.indexing.vector_index import MetaFilter, VectorIndex
 from app.rag.types import QueryIntent
+from app.substances.msds_synonyms import resolvable_synonym
 
 log = get_logger(__name__)
 
@@ -147,6 +148,10 @@ class Retrievers:
             .where(
                 SubstanceSynonym.term.in_(names),
                 Substance.cas_number.is_not(None),
+                # The same rule `_match_synonyms` applied: a term the query
+                # resolved through another substance's row must not reach an
+                # ambiguous document-owned row of the same spelling (BR-73a).
+                resolvable_synonym(),
             )
             .distinct()
             .limit(3)

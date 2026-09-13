@@ -30,7 +30,7 @@ _SYNONYM_KIND = {
     SynonymType.KO: MatchKind.NAME_KO,
     SynonymType.EN: MatchKind.NAME_EN,
     SynonymType.ALIAS: MatchKind.ALIAS,
-    # D11 backfill: a published other name is an alias, not the master's
+    # D11 MSDS names: a published other name is an alias, not the master's
     # name_ko - falling through to the NAME_KO default would say otherwise.
     SynonymType.MSDS_TITLE: MatchKind.ALIAS,
     SynonymType.COMMON_NAME: MatchKind.ALIAS,
